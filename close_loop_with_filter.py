@@ -88,14 +88,19 @@ class GaussianKalmanFilter:
         return self.state[:2]
 
     def probability(self, position):
-        """
-        Get probability of given position under current belief
-            position: (x, y) position to evaluate
-            Probability density at given position
-        """
-        if self.belief is None:
-            return 0.0
-        return self.belief.pdf(position)
+        """Robust probability calculation"""
+        position = np.asarray(position)
+        # Ensure numerical stability
+        min_cov = 1e-3
+        cov = np.maximum(self.covariance[:2,:2], min_cov*np.eye(2))    
+    # Handle perfect matches
+    if np.allclose(position, self.state[:2], atol=1e-6):
+        return 1.0
+    # Recreate distribution with stabilized covariance
+    try:
+        return multivariate_normal(mean=self.state[:2], cov=cov).pdf(position)
+    except:
+        return 0.0  # Fallback for numerical errors
 
     def get_boosted_position(self):
         """Get position with velocity boost applied"""
