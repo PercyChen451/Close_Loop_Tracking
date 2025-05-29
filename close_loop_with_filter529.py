@@ -392,23 +392,23 @@ def update_control_loop(tipCoords, num_pts, kin, circleCoords, arduino, dt):
     new_vol = np.clip( kin.lengths_to_volumes(u_target, base_height), 0, 500 )
     
     arduino.send_data(np.array([new_vol[0], new_vol[1], new_vol[1]]), commands) # send new set pressure and commands to arduino
+
     # print(u_ells, delta_u, u_target, new_vol)
     #print(tipCoords, goalCoords, np.linalg.norm(error), volumes)
     return (pcc_coords, revoluteVecDamp)
-    
-def remove_white_background_hsv(image, background, 
+
+def remove_white_background_hsv(image, 
     h_low=0, h_high=179, s_low=46, s_high=255, v_low=0, v_high=225):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     lower_white = np.array([h_low, s_low, v_low])
     upper_white = np.array([h_high, s_high, v_high])
     mask = cv2.inRange(hsv, lower_white, upper_white)
     mask_inv = cv2.bitwise_not(mask)
-    fg = cv2.bitwise_and(image, image, mask=mask_inv)
-    bg = cv2.bitwise_and(background, background, mask=mask)
-    result = cv2.add(fg, bg)
-    
-    return result
+    fg = cv2.bitwise_and(image, image, mask=mask)
 
+    #result = cv2.add(fg, bg)
+    #return result
+    return fg
 
 
 def main():
@@ -529,20 +529,17 @@ def main():
                 print("manual mode")
             # print(x_mm, y_mm)
             (pcc_coords, rigid_coords) = update_control_loop(np.array([x_mm, y_mm]), num_pts, kin, pathCoords, arduino, dt)
-
-            overlay = render_matplotlib_overlay(origin, display_pos , frame, pcc_coords, rigid_coords, scale,rotation_matrix)
+            overlay = render_matplotlib_overlay(origin, display_pos , frame, pcc_coords, rigid_coords, scale,rotation_matrix)  
+            fg = remove_white_background_hsv(overlay, h_low=0, h_high=179, s_low=46, s_high=255, v_low=0, v_high=225)
+            bg = remove_white_background_hsv(frame, h_low=35, h_high=85, s_low=40, s_high=255, v_low=40, v_high=255)
+            
             if overlay is not None:
-        # Extract alpha channel and create mask
-                alpha = overlay[:,:,2] / 255.0
-                inv_alpha = 1.0 - alpha
-    
-    # Blend each channel separately
-                for c in range(0, 2):
-                    frame[:,:,c] = (alpha * frame[:,:,c] + inv_alpha * overlay[:,:,c])
+                display = cv2.addWeighted(fg, 0.9, bg, 1.0, 0)
 
             #print(f"{x_mm:.2f}, {y_mm:.2f}, {dt:.3f}")
 
-        cv2.imshow("Tracking", frame)
+        cv2.imshow("Tracking", display)
+        
         
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
