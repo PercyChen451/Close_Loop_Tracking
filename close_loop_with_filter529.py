@@ -392,21 +392,23 @@ def update_control_loop(tipCoords, num_pts, kin, circleCoords, arduino, dt):
     new_vol = np.clip( kin.lengths_to_volumes(u_target, base_height), 0, 500 )
     
     arduino.send_data(np.array([new_vol[0], new_vol[1], new_vol[1]]), commands) # send new set pressure and commands to arduino
-
     # print(u_ells, delta_u, u_target, new_vol)
     #print(tipCoords, goalCoords, np.linalg.norm(error), volumes)
     return (pcc_coords, revoluteVecDamp)
+    
+def remove_white_background_hsv(image, background, 
+    h_low=0, h_high=179, s_low=46, s_high=255, v_low=0, v_high=225):
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower_white = np.array([h_low, s_low, v_low])
+    upper_white = np.array([h_high, s_high, v_high])
+    mask = cv2.inRange(hsv, lower_white, upper_white)
+    mask_inv = cv2.bitwise_not(mask)
+    fg = cv2.bitwise_and(image, image, mask=mask_inv)
+    bg = cv2.bitwise_and(background, background, mask=mask)
+    result = cv2.add(fg, bg)
+    
+    return result
 
-def remove_background(image):
-    overlay_y, overlay_x, _ = image.shape
-
-    background_copy[y:(y + overlay_y), x:(x + overlay_x)] = image[:, :, :]
-    graph_as_array = np.asarray(buf)
-    for height in range(y, y + overlay_y):
-        for width in range(x, x + overlay_x):
-            pixel = background_copy[height][width]
-            if pixel[0] == 255 and pixel[1] == 255 and pixel[2] == 255:
-                background_copy[height][width] = background[height][width]
 
 
 def main():
