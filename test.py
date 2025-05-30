@@ -40,41 +40,66 @@ def get_marker_positions(cap1, cap2):
     marker1 = detect_red_marker(frame1)
     marker2 = detect_red_marker(frame2, n=2)  # Using different HSV range for second camera
     
+    # Display frames with markers
+    if marker1:
+        cv2.circle(frame1, marker1, 10, (0, 255, 0), 2)
+    if marker2:
+        cv2.circle(frame2, marker2, 10, (0, 255, 0), 2)
+    
+    cv2.imshow("Camera 1", frame1)
+    cv2.imshow("Camera 2", frame2)
+    cv2.waitKey(100)
+    
     return marker1, marker2
 
-def calculate_calibration(origin1, moved1, origin2, moved2):
-    """
-    Calculate transformation between cameras using origin and moved points
-    Returns homography matrix
-    """
-    # Create point arrays (origin and moved point for each camera)
-    pts_cam1 = np.array([origin1, moved1], dtype=np.float32)
-    pts_cam2 = np.array([origin2, moved2], dtype=np.float32)
+def triangulate_3d_point(p1, p2, P1, P2):
+    """Calculate 3D position using two camera views"""
+    A = np.zeros((4, 4))
+    A[0] = p1[0] * P1[2] - P1[0]
+    A[1] = p1[1] * P1[2] - P1[1]
+    A[2] = p2[0] * P2[2] - P2[0]
+    A[3] = p2[1] * P2[2] - P2[1]
     
-    # Calculate homography (minimum 4 points needed, but we only have 2)
-    # For proper calibration you'd want more points, but with just two points
-    # we can calculate a simple affine transformation (translation + scaling)
-    if len(pts_cam1) >= 2 and len(pts_cam2) >= 2:
-        # Calculate translation vector
-        t = pts_cam1[0] - pts_cam2[0]
-        
-        # Calculate scale (distance between points)
-        dist1 = np.linalg.norm(pts_cam1[1] - pts_cam1[0])
-        dist2 = np.linalg.norm(pts_cam2[1] - pts_cam2[0])
-        scale = dist1 / dist2 if dist2 != 0 else 1.0
-        
-        print(f"Calculated translation: {t}, scale: {scale}")
-        
-        # Create simple affine transformation matrix
-        # This is a simplified approach - proper calibration would need more points
-        H = np.array([
-            [scale, 0, t[0]],
-            [0, scale, t[1]],
-            [0, 0, 1]
-        ], dtype=np.float32)
-        
-        return H
-    return None
+    _, _, V = np.linalg.svd(A)
+    point_3d = V[-1, :3] / V[-1, 3]
+    return point_3d
+
+def calculate_camera_matrices(origin1, moved1, origin2, moved2):
+    """
+    Calculate projection matrices for both cameras and scaling factor
+    Returns P1, P2, scale_factor
+    """
+    # Calculate fundamental matrix (simplified approach)
+    pts1 = np.array([origin1, moved1], dtype=np.float32)
+    pts2 = np.array([origin2, moved2], dtype=np.float32)
+    
+    # Calculate scaling factor (distance should be same in real world)
+    dist1 = np.linalg.norm(pts1[1] - pts1[0])
+    dist2 = np.linalg.norm(pts2[1] - pts2[0])
+    scale_factor = dist1 / dist2 if dist2 != 0 else 1.0
+    
+    # Normalize points from camera 2
+    pts2_scaled = pts2 * scale_factor
+    
+    # Estimate fundamental matrix
+    F, _ = cv2.findFundamentalMat(pts1, pts2_scaled, cv2.FM_8POINT)
+    
+    # Camera 1 matrix (assuming identity for first camera)
+    P1 = np.array([[1, 0, 0, 0],
+                   [0, 1, 0, 0],
+                   [0, 0, 1, 0]])
+    
+    # Calculate camera 2 matrix from fundamental matrix
+    e2 = np.linalg.svd(F)[2][-1]  # Epipole
+    e2_skew = np.array([[0, -e2[2], e2[1]],
+                        [e2[2], 0, -e2[0]],
+                        [-e2[1], e2[0], 0]])
+    P2 = np.hstack((e2_skew.dot(F) + np.outer(e2, [1, 1, 1]), e2.reshape(3, 1)))
+    
+    # Scale camera 2 matrix to match real-world units
+    P2[:, :3] = P2[:, :3] * scale_factor
+    
+    return P1, P2, scale_factor
 
 def main():
     global ser
@@ -109,18 +134,20 @@ def main():
     
     print(f"Moved positions - Cam1: {moved1}, Cam2: {moved2}")
     
-    # Step 3: Calculate calibration
-    print("\n=== STEP 3: Calculating calibration ===")
-    H = calculate_calibration(origin1, moved1, origin2, moved2)
-    if H is None:
-        print("Calibration failed")
-        return
+    # Step 3: Calculate camera matrices and scaling
+    print("\n=== STEP 3: Calculating camera matrices ===")
+    P1, P2, scale_factor = calculate_camera_matrices(origin1, moved1, origin2, moved2)
     
-    print("Calibration matrix (Homography):")
-    print(H)
+    print(f"Scale factor (cam2 to cam1): {scale_factor}")
+    print("Camera 1 projection matrix:")
+    print(P1)
+    print("Camera 2 projection matrix (scaled):")
+    print(P2)
     
-    # Step 4: Verification
-    print("\n=== STEP 4: Verification ===")
+    # Step 4: Continuous 3D position tracking
+    print("\n=== STEP 4: 3D Position Tracking ===")
+    print("Press ESC to exit...")
+    
     while True:
         # Get current marker positions
         marker1, marker2 = get_marker_positions(cap1, cap2)
@@ -128,26 +155,16 @@ def main():
             print("Could not detect markers")
             continue
         
-        # Transform camera2 point to camera1 space
-        point_cam2 = np.array([marker2[0], marker2[1], 1], dtype=np.float32)
-        transformed = np.dot(H, point_cam2)
-        transformed = (transformed / transformed[2])[:2]  # Normalize and take first two components
-        transformed_point = (int(transformed[0]), int(transformed[1]))
+        # Apply scale to camera2 points
+        marker2_scaled = (int(marker2[0] * scale_factor), 
+                          int(marker2[1] * scale_factor))
         
-        print(f"Camera1: {marker1}, Camera2: {marker2} -> Transformed: {transformed_point}")
+        # Triangulate 3D position
+        point_3d = triangulate_3d_point(
+            marker1, marker2_scaled, P1, P2
+        )
         
-        # Display frames
-        ret1, frame1 = cap1.read()
-        ret2, frame2 = cap2.read()
-        
-        if ret1 and ret2:
-            cv2.circle(frame1, marker1, 10, (0, 255, 0), 2)
-            cv2.circle(frame1, transformed_point, 10, (0, 0, 255), 2)
-            
-            cv2.circle(frame2, marker2, 10, (0, 255, 0), 2)
-            
-            cv2.imshow("Camera 1", frame1)
-            cv2.imshow("Camera 2", frame2)
+        print(f"3D Position (mm): X={point_3d[0]:.1f}, Y={point_3d[1]:.1f}, Z={point_3d[2]:.1f}")
         
         if cv2.waitKey(100) & 0xFF == 27:
             break
