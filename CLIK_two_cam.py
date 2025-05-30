@@ -15,6 +15,172 @@ isManualMode = True
 keys_pressed = set()
 clicked_points = []
 
+import cv2
+import numpy as np
+from collections import defaultdict
+from scipy.optimize import least_squares
+
+class NaturalFeatureCalibrator:
+    def __init__(self, camera_count=2):
+        self.camera_count = camera_count
+        self.detections = defaultdict(list)  # Stores {camera_idx: [list of (x,y) points]}
+        self.robot_positions = []  # Stores known robot positions
+        self.camera_params = []  # Will store [focal, cx, cy, k1, k2, p1, p2, k3] for each camera
+        self.camera_poses = []  # Will store [R|t] for each camera
+        
+    def detect_marker(self, frame, camera_idx):
+        """Detect the red robot tip in a frame (similar to your existing code)"""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Red color detection (adjust ranges as needed)
+        lower_red1 = np.array([0, 95, 95])
+        upper_red1 = np.array([40, 255, 255])
+        lower_red2 = np.array([155, 95, 95])
+        upper_red2 = np.array([179, 255, 255])
+        
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        mask = cv2.bitwise_or(mask1, mask2)
+        
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return None
+            
+        largest = max(contours, key=cv2.contourArea)
+        M = cv2.moments(largest)
+        if M["m00"] == 0:
+            return None
+            
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        return (cx, cy)
+    
+    def record_observation(self, camera_idx, frame, robot_position):
+        """Record a detection with known robot position"""
+        point = self.detect_marker(frame, camera_idx)
+        if point:
+            self.detections[camera_idx].append(point)
+            self.robot_positions.append(robot_position)
+            return True
+        return False
+    
+    def initialize_parameters(self, image_size):
+        """Initialize camera parameters with reasonable guesses"""
+        height, width = image_size
+        for _ in range(self.camera_count):
+            # Initial guess: focal length ~ image width, principal point at center
+            self.camera_params.append([
+                width,          # fx
+                width,          # fy
+                width/2,        # cx
+                height/2,      # cy
+                0, 0, 0, 0, 0   # distortion coefficients (k1, k2, p1, p2, k3)
+            ])
+            
+            # Initial camera pose guess (will be refined)
+            self.camera_poses.append(np.eye(4))
+    
+    def project_point(self, params, point_3d):
+        """Project a 3D point to 2D using camera parameters"""
+        fx, fy, cx, cy, k1, k2, p1, p2, k3 = params
+        rvec = np.zeros(3)  # Rotation already handled in camera_poses
+        tvec = np.zeros(3)  # Translation already handled in camera_poses
+        
+        # Convert to normalized coordinates
+        x = point_3d[0]/point_3d[2]
+        y = point_3d[1]/point_3d[2]
+        
+        # Apply distortion
+        r2 = x*x + y*y
+        radial = 1 + k1*r2 + k2*r2*r2 + k3*r2*r2*r2
+        x_dist = x*radial + 2*p1*x*y + p2*(r2 + 2*x*x)
+        y_dist = y*radial + p1*(r2 + 2*y*y) + 2*p2*x*y
+        
+        # Project to pixel coordinates
+        u = fx * x_dist + cx
+        v = fy * y_dist + cy
+        
+        return np.array([u, v])
+    
+    def bundle_adjustment(self):
+        """Perform bundle adjustment to refine camera parameters"""
+        # Convert observations to arrays
+        observations = []
+        point_indices = []
+        camera_indices = []
+        
+        for cam_idx, points in self.detections.items():
+            for i, point in enumerate(points):
+                observations.append(point)
+                point_indices.append(i)
+                camera_indices.append(cam_idx)
+        
+        observations = np.array(observations)
+        point_indices = np.array(point_indices)
+        camera_indices = np.array(camera_indices)
+        
+        # Initial parameter vector
+        n_cameras = len(self.camera_params)
+        n_points = len(self.robot_positions)
+        
+        # Create parameter vector: [all camera params] + [all 3D points]
+        params = np.concatenate([
+            np.array(self.camera_params).ravel(),
+            np.array(self.robot_positions).ravel()
+        ])
+        
+        def residuals(params):
+            """Compute residuals for least squares optimization"""
+            # Split parameters back into camera params and 3D points
+            camera_params = params[:n_cameras*9].reshape(n_cameras, 9)
+            points_3d = params[n_cameras*9:].reshape(n_points, 3)
+            
+            res = []
+            for obs, cam_idx, pt_idx in zip(observations, camera_indices, point_indices):
+                proj = self.project_point(camera_params[cam_idx], points_3d[pt_idx])
+                res.extend(obs - proj)
+            
+            return np.array(res)
+        
+        # Run optimization
+        result = least_squares(residuals, params, verbose=2, x_scale='jac', ftol=1e-4, max_nfev=100)
+        
+        # Update parameters with optimized values
+        optimized_params = result.x
+        self.camera_params = optimized_params[:n_cameras*9].reshape(n_cameras, 9).tolist()
+        self.robot_positions = optimized_params[n_cameras*9:].reshape(n_points, 3).tolist()
+    
+    def calibrate(self, frames_list, robot_positions):
+        """
+        Main calibration routine
+        frames_list: List of lists where each sublist contains frames from all cameras
+        robot_positions: List of corresponding known robot positions
+        """
+        if len(frames_list) != len(robot_positions):
+            raise ValueError("Number of frames sets must match number of robot positions")
+        
+        # Initialize parameters based on first frame
+        self.initialize_parameters(frames_list[0][0].shape[:2])
+        
+        # Collect observations
+        for frames, position in zip(frames_list, robot_positions):
+            for cam_idx, frame in enumerate(frames):
+                self.record_observation(cam_idx, frame, position)
+        
+        # Need at least 6 observations per camera for stable calibration
+        min_observations = 6
+        for cam_idx in range(self.camera_count):
+            if len(self.detections[cam_idx]) < min_observations:
+                raise ValueError(f"Camera {cam_idx} needs at least {min_observations} observations")
+        
+        # Run bundle adjustment
+        print("Running bundle adjustment...")
+        self.bundle_adjustment()
+        print("Calibration complete!")
+        
+        return self.camera_params, self.camera_poses
+
 def click_event(event, x, y, flags, param):
     global clicked_points
     if event == cv2.EVENT_LBUTTONDOWN:
