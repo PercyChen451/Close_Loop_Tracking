@@ -1,147 +1,128 @@
 import cv2
 import numpy as np
+import serial
 import time
-from Arduino import ArduinoComm, ArduinoConnect
 
-class RobotCalibration:
-    def __init__(self):
-        # Initialize Arduino connection
-        self.connect = ArduinoConnect('/dev/ttyACM0', 115200)  # Update port as needed
-        self.arduino = ArduinoComm(self.connect)
-        
-        # Camera setup
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        
-        # Calibration parameters
-        self.calibration_positions = [
-            [200, 200, 200],  # Target position
-            [0, 0, 0]         # Home position
-        ]
-        self.current_position = [0, 0, 0]
-        self.tracked_positions = []
-        
-    def detect_red_marker(self, frame):
-        """Detect red marker using HSV color space"""
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        
-        # Define red color ranges
-        lower_red1 = np.array([0, 120, 70])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 120, 70])
-        upper_red2 = np.array([180, 255, 255])
-        
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        mask = cv2.bitwise_or(mask1, mask2)
-        
-        # Clean up the mask
-        kernel = np.ones((5,5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        
-        # Find contours
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return None
-            
-        largest = max(contours, key=cv2.contourArea)
-        M = cv2.moments(largest)
-        if M["m00"] == 0:
-            return None
-            
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        return (cx, cy)
+# Global variables
+clicked_points = []
+ser = None
+
+# Your existing functions would be placed here (click_event, choose_video_source, select_calibration_points, calculate_scale, detect_red_marker)
+
+def initialize_serial(port='COM3', baudrate=9600):
+    global ser
+    try:
+        ser = serial.Serial(port, baudrate, timeout=1)
+        time.sleep(2)  # Wait for connection to establish
+        print(f"Connected to {port} at {baudrate} baud")
+    except Exception as e:
+        print(f"Error opening serial port: {e}")
+        ser = None
+
+def write_to_serial(x, y, z):
+    if ser is not None:
+        command = f"{x},{y},{z}\n"
+        ser.write(command.encode())
+        print(f"Sent to serial: {command.strip()}")
+    else:
+        print("Serial port not initialized. Cannot send command.")
+
+def calibrate_cameras(cap1, cap2):
+    # Capture frames from both cameras
+    ret1, frame1 = cap1.read()
+    ret2, frame2 = cap2.read()
     
-    def move_robot(self, target_position):
-        """Send movement command to Arduino"""
-        print(f"Moving to: {target_position}")
-        
-        # Convert position to pressure commands (adjust based on your robot's requirements)
-        pressures = [
-            target_position[0] / 100.0,  # Scale down for pressure command
-            target_position[1] / 100.0,
-            target_position[2] / 100.0
-        ]
-        
-        # Command format: [enable, mode, direction, etc.]
-        commands = [1, 1, 1, 1]  # Adjust based on your Arduino command protocol
-        
-        # Send command
-        self.arduino.send_data(pressures, commands)
-        self.current_position = target_position
-        
-        # Wait for movement to complete (adjust time as needed)
-        time.sleep(3)
+    if not ret1 or not ret2:
+        print("Error reading frames for calibration")
+        return None, None
     
-    def track_position(self, duration=5):
-        """Track the red marker position for specified duration"""
-        print(f"Tracking for {duration} seconds...")
-        start_time = time.time()
-        positions = []
-        
-        while time.time() - start_time < duration:
-            ret, frame = self.cap.read()
-            if not ret:
-                continue
-                
-            marker_pos = self.detect_red_marker(frame)
-            if marker_pos:
-                positions.append(marker_pos)
-                cv2.circle(frame, marker_pos, 10, (0, 255, 0), 2)
-                cv2.putText(frame, f"Position: {marker_pos}", (20, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            cv2.imshow("Tracking", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        
-        cv2.destroyWindow("Tracking")
-        return positions
+    # Get calibration points from camera 1
+    points1 = select_calibration_points(frame1, "Select 2 points for calibration (Camera 1)", 2)
+    if len(points1) < 2:
+        print("Not enough points selected for Camera 1")
+        return None, None
     
-    def run_calibration_sequence(self):
-        """Execute the full calibration sequence"""
-        try:
-            # 1. Move to first calibration position
-            self.move_robot(self.calibration_positions[0])
+    # Get calibration points from camera 2
+    points2 = select_calibration_points(frame2, "Select same 2 points for calibration (Camera 2)", 2)
+    if len(points2) < 2:
+        print("Not enough points selected for Camera 2")
+        return None, None
+    
+    # Calculate transformation between cameras
+    pts1 = np.array(points1, dtype=np.float32)
+    pts2 = np.array(points2, dtype=np.float32)
+    
+    # Calculate homography matrix
+    H, _ = cv2.findHomography(pts2, pts1)
+    print("Homography matrix calculated:")
+    print(H)
+    
+    return H, None  # Returning homography and None for scale (you can add scale calculation if needed)
+
+def main():
+    global ser
+    
+    # Initialize video sources
+    cap1, cap2 = choose_video_source()
+    
+    # Initialize serial
+    initialize_serial()
+    
+    # Calibrate cameras
+    H, scale = calibrate_cameras(cap1, cap2)
+    if H is None:
+        print("Camera calibration failed")
+        return
+    
+    # Main loop
+    while True:
+        # Read frames from both cameras
+        ret1, frame1 = cap1.read()
+        ret2, frame2 = cap2.read()
+        
+        if not ret1 or not ret2:
+            print("Error reading frames")
+            break
+        
+        # Detect red marker in both cameras
+        marker1 = detect_red_marker(frame1)
+        marker2 = detect_red_marker(frame2, n=2)  # Using different HSV range for second camera
+        
+        # Draw markers if found
+        if marker1:
+            cv2.circle(frame1, marker1, 10, (0, 255, 0), 2)
+            print(f"Camera 1 marker: {marker1}")
+        
+        if marker2:
+            cv2.circle(frame2, marker2, 10, (0, 255, 0), 2)
+            print(f"Camera 2 marker: {marker2}")
             
-            # 2. Track position at first point
-            pos1 = self.track_position()
-            if pos1:
-                avg_pos1 = np.mean(pos1, axis=0)
-                print(f"Average position at {self.calibration_positions[0]}: {avg_pos1}")
-                self.tracked_positions.append(avg_pos1)
-            
-            # 3. Move to home position
-            self.move_robot(self.calibration_positions[1])
-            
-            # 4. Track position at home
-            pos2 = self.track_position()
-            if pos2:
-                avg_pos2 = np.mean(pos2, axis=0)
-                print(f"Average position at {self.calibration_positions[1]}: {avg_pos2}")
-                self.tracked_positions.append(avg_pos2)
-            
-            # Calculate scale factor if we have two points
-            if len(self.tracked_positions) == 2:
-                pixel_dist = np.linalg.norm(self.tracked_positions[0] - self.tracked_positions[1])
-                real_dist = np.linalg.norm(np.array(self.calibration_positions[0]) - np.array(self.calibration_positions[1]))
-                scale = real_dist / pixel_dist
-                print(f"Calculated scale factor: {scale:.4f} mm/pixel")
-            
-        except KeyboardInterrupt:
-            print("Calibration interrupted")
-        finally:
-            # Return to home position
-            self.move_robot([0, 0, 0])
-            self.cap.release()
-            cv2.destroyAllWindows()
-            self.connect.closePort()
+            # Transform marker2 coordinates to camera1's coordinate system
+            if H is not None:
+                # Convert to homogeneous coordinates
+                point = np.array([[marker2[0], marker2[1], 1]], dtype=np.float32)
+                transformed = np.dot(H, point.T).T
+                transformed = (transformed / transformed[0, 2])  # Normalize
+                transformed_point = (int(transformed[0, 0]), int(transformed[0, 1]))
+                print(f"Transformed Camera 2 marker to Camera 1 space: {transformed_point}")
+        
+        # Display frames
+        cv2.imshow("Camera 1", frame1)
+        cv2.imshow("Camera 2", frame2)
+        
+        # Send coordinates to serial
+        write_to_serial(200, 200, 200)
+        
+        # Exit on ESC
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+    
+    # Cleanup
+    cap1.release()
+    cap2.release()
+    cv2.destroyAllWindows()
+    if ser is not None:
+        ser.close()
 
 if __name__ == "__main__":
-    calibrator = RobotCalibration()
-    print("Starting calibration sequence...")
-    calibrator.run_calibration_sequence()
-    print("Calibration complete!")
+    main()
