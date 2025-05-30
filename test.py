@@ -7,7 +7,8 @@ import time
 clicked_points = []
 ser = None
 
-# Your existing functions would be placed here (click_event, choose_video_source, select_calibration_points, calculate_scale, detect_red_marker)
+# Your existing functions would be placed here (click_event, choose_video_source, 
+# select_calibration_points, calculate_scale, detect_red_marker)
 
 def initialize_serial(port='COM3', baudrate=9600):
     global ser
@@ -27,37 +28,53 @@ def write_to_serial(x, y, z):
     else:
         print("Serial port not initialized. Cannot send command.")
 
-def calibrate_cameras(cap1, cap2):
-    # Capture frames from both cameras
+def get_marker_positions(cap1, cap2):
+    """Get marker positions from both cameras"""
     ret1, frame1 = cap1.read()
     ret2, frame2 = cap2.read()
     
     if not ret1 or not ret2:
-        print("Error reading frames for calibration")
+        print("Error reading frames")
         return None, None
     
-    # Get calibration points from camera 1
-    points1 = select_calibration_points(frame1, "Select 2 points for calibration (Camera 1)", 2)
-    if len(points1) < 2:
-        print("Not enough points selected for Camera 1")
-        return None, None
+    marker1 = detect_red_marker(frame1)
+    marker2 = detect_red_marker(frame2, n=2)  # Using different HSV range for second camera
     
-    # Get calibration points from camera 2
-    points2 = select_calibration_points(frame2, "Select same 2 points for calibration (Camera 2)", 2)
-    if len(points2) < 2:
-        print("Not enough points selected for Camera 2")
-        return None, None
+    return marker1, marker2
+
+def calculate_calibration(origin1, moved1, origin2, moved2):
+    """
+    Calculate transformation between cameras using origin and moved points
+    Returns homography matrix
+    """
+    # Create point arrays (origin and moved point for each camera)
+    pts_cam1 = np.array([origin1, moved1], dtype=np.float32)
+    pts_cam2 = np.array([origin2, moved2], dtype=np.float32)
     
-    # Calculate transformation between cameras
-    pts1 = np.array(points1, dtype=np.float32)
-    pts2 = np.array(points2, dtype=np.float32)
-    
-    # Calculate homography matrix
-    H, _ = cv2.findHomography(pts2, pts1)
-    print("Homography matrix calculated:")
-    print(H)
-    
-    return H, None  # Returning homography and None for scale (you can add scale calculation if needed)
+    # Calculate homography (minimum 4 points needed, but we only have 2)
+    # For proper calibration you'd want more points, but with just two points
+    # we can calculate a simple affine transformation (translation + scaling)
+    if len(pts_cam1) >= 2 and len(pts_cam2) >= 2:
+        # Calculate translation vector
+        t = pts_cam1[0] - pts_cam2[0]
+        
+        # Calculate scale (distance between points)
+        dist1 = np.linalg.norm(pts_cam1[1] - pts_cam1[0])
+        dist2 = np.linalg.norm(pts_cam2[1] - pts_cam2[0])
+        scale = dist1 / dist2 if dist2 != 0 else 1.0
+        
+        print(f"Calculated translation: {t}, scale: {scale}")
+        
+        # Create simple affine transformation matrix
+        # This is a simplified approach - proper calibration would need more points
+        H = np.array([
+            [scale, 0, t[0]],
+            [0, scale, t[1]],
+            [0, 0, 1]
+        ], dtype=np.float32)
+        
+        return H
+    return None
 
 def main():
     global ser
@@ -68,53 +85,71 @@ def main():
     # Initialize serial
     initialize_serial()
     
-    # Calibrate cameras
-    H, scale = calibrate_cameras(cap1, cap2)
-    if H is None:
-        print("Camera calibration failed")
+    # Step 1: Get origin position in both cameras
+    print("=== STEP 1: Select origin position ===")
+    input("Place the robot at origin position and press Enter...")
+    
+    origin1, origin2 = get_marker_positions(cap1, cap2)
+    if origin1 is None or origin2 is None:
+        print("Could not detect marker in one or both cameras")
         return
     
-    # Main loop
+    print(f"Origin positions - Cam1: {origin1}, Cam2: {origin2}")
+    
+    # Step 2: Move robot up and get new position
+    print("\n=== STEP 2: Moving robot up ===")
+    input("Press Enter to move robot up...")
+    write_to_serial(200, 200, 200)  # Send move command
+    time.sleep(2)  # Wait for movement to complete
+    
+    moved1, moved2 = get_marker_positions(cap1, cap2)
+    if moved1 is None or moved2 is None:
+        print("Could not detect marker after movement")
+        return
+    
+    print(f"Moved positions - Cam1: {moved1}, Cam2: {moved2}")
+    
+    # Step 3: Calculate calibration
+    print("\n=== STEP 3: Calculating calibration ===")
+    H = calculate_calibration(origin1, moved1, origin2, moved2)
+    if H is None:
+        print("Calibration failed")
+        return
+    
+    print("Calibration matrix (Homography):")
+    print(H)
+    
+    # Step 4: Verification
+    print("\n=== STEP 4: Verification ===")
     while True:
-        # Read frames from both cameras
+        # Get current marker positions
+        marker1, marker2 = get_marker_positions(cap1, cap2)
+        if marker1 is None or marker2 is None:
+            print("Could not detect markers")
+            continue
+        
+        # Transform camera2 point to camera1 space
+        point_cam2 = np.array([marker2[0], marker2[1], 1], dtype=np.float32)
+        transformed = np.dot(H, point_cam2)
+        transformed = (transformed / transformed[2])[:2]  # Normalize and take first two components
+        transformed_point = (int(transformed[0]), int(transformed[1]))
+        
+        print(f"Camera1: {marker1}, Camera2: {marker2} -> Transformed: {transformed_point}")
+        
+        # Display frames
         ret1, frame1 = cap1.read()
         ret2, frame2 = cap2.read()
         
-        if not ret1 or not ret2:
-            print("Error reading frames")
-            break
-        
-        # Detect red marker in both cameras
-        marker1 = detect_red_marker(frame1)
-        marker2 = detect_red_marker(frame2, n=2)  # Using different HSV range for second camera
-        
-        # Draw markers if found
-        if marker1:
+        if ret1 and ret2:
             cv2.circle(frame1, marker1, 10, (0, 255, 0), 2)
-            print(f"Camera 1 marker: {marker1}")
-        
-        if marker2:
-            cv2.circle(frame2, marker2, 10, (0, 255, 0), 2)
-            print(f"Camera 2 marker: {marker2}")
+            cv2.circle(frame1, transformed_point, 10, (0, 0, 255), 2)
             
-            # Transform marker2 coordinates to camera1's coordinate system
-            if H is not None:
-                # Convert to homogeneous coordinates
-                point = np.array([[marker2[0], marker2[1], 1]], dtype=np.float32)
-                transformed = np.dot(H, point.T).T
-                transformed = (transformed / transformed[0, 2])  # Normalize
-                transformed_point = (int(transformed[0, 0]), int(transformed[0, 1]))
-                print(f"Transformed Camera 2 marker to Camera 1 space: {transformed_point}")
+            cv2.circle(frame2, marker2, 10, (0, 255, 0), 2)
+            
+            cv2.imshow("Camera 1", frame1)
+            cv2.imshow("Camera 2", frame2)
         
-        # Display frames
-        cv2.imshow("Camera 1", frame1)
-        cv2.imshow("Camera 2", frame2)
-        
-        # Send coordinates to serial
-        write_to_serial(200, 200, 200)
-        
-        # Exit on ESC
-        if cv2.waitKey(1) & 0xFF == 27:
+        if cv2.waitKey(100) & 0xFF == 27:
             break
     
     # Cleanup
