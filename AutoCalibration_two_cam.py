@@ -300,138 +300,129 @@ def get_marker_positions(cap1, cap2):
     
     return marker1, marker2
 
-def triangulate_3d_point(p1, p2, P1, P2):
-    """Calculate 3D position using two camera views"""
-    A = np.zeros((4, 4))
-    A[0] = p1[0] * P1[2] - P1[0]
-    A[1] = p1[1] * P1[2] - P1[1]
-    A[2] = p2[0] * P2[2] - P2[0]
-    A[3] = p2[1] * P2[2] - P2[1]
-    
-    _, _, V = np.linalg.svd(A)
-    point_3d = V[-1, :3] / V[-1, 3]
-    return point_3d
-
 def calculate_camera_matrices(origin1, moved1, origin2, moved2):
     """
-    Calculate projection matrices for both cameras and scaling factor
-    Returns P1, P2, scale_factor
+    Calculate the transformation between cameras using known movement
+    Returns:
+    - scale_factor: scaling from cam2 pixels to cam1 pixels
+    - translation: translation vector between camera coordinates
+    - rotation: rotation angle between camera views (simplified)
     """
-    x = moved1[0] - origin1[0]
-    y1 = moved1[1] - origin1[1]
-    z = moved2[0] - origin2[0]
-    y2 = moved2[1] - origin2[1]
-    scale_factor = 0 
-    #scale_factor = y1 / y2
-    return x, y1, y2, z, scale_factor 
-"""
-    # Calculate fundamental matrix (simplified approach)
-    pts1 = np.array([origin1, moved1], dtype=np.float32)
-    pts2 = np.array([origin2, moved2], dtype=np.float32)
+    # Calculate movement vectors in each camera
+    vec1 = np.array(moved1) - np.array(origin1)
+    vec2 = np.array(moved2) - np.array(origin2)
     
-    # Calculate scaling factor (distance should be same in real world)
-    dist1 = np.linalg.norm(pts1[1] - pts1[0])
-    dist2 = np.linalg.norm(pts2[1] - pts2[0])
-    scale_factor = dist1 / dist2 if dist2 != 0 else 1.0
+    # Calculate scaling factor (assuming vertical movement)
+    scale_factor = vec1[1] / vec2[1] if vec2[1] != 0 else 1.0
     
-    # Normalize points from camera 2
-    pts2_scaled = pts2 * scale_factor
+    # Calculate rotation angle (simplified 2D rotation)
+    angle = np.arctan2(vec2[1], vec2[0]) - np.arctan2(vec1[1], vec1[0])
     
-    # Estimate fundamental matrix
-    F, _ = cv2.findFundamentalMat(pts1, pts2_scaled, cv2.FM_8POINT)
+    # Calculate translation (origin points should match after scaling and rotation)
+    rot_matrix = np.array([[np.cos(angle), -np.sin(angle)],
+                          [np.sin(angle), np.cos(angle)]])
+    translated_origin2 = np.dot(rot_matrix, np.array(origin2) * scale_factor
+    translation = np.array(origin1) - translated_origin2
     
-    # Camera 1 matrix (assuming identity for first camera)
-    P1 = np.array([[1, 0, 0, 0],
-                   [0, 1, 0, 0],
-                   [0, 0, 1, 0]])
+    return scale_factor, translation, angle
+
+def triangulate_3d_position(point1, point2, scale_factor, translation, angle):
+    #Calculate 3D position from two camera views
+    #point1: (x,y) from camera 1 (YZ plane)
+    #point2: (x,y) from camera 2 (XZ plane)
+    #Returns: (X, Y, Z) in mm
+    # Apply scaling and rotation to camera2 point
+    rot_matrix = np.array([[np.cos(angle), -np.sin(angle)],
+                          [np.sin(angle), np.cos(angle)]])
+    point2_transformed = np.dot(rot_matrix, np.array(point2)) * scale_factor + translation
     
-    # Calculate camera 2 origin1,
-    #e2 = np.linalg.svd(F)[2][-1]  
-    e2 = np. array([1,1,1], dtype = np.float32)
-    e2_skew = np.array([[0, -e2[2], e2[1]],
-                        [e2[2], 0, -e2[0]],
-                        [-e2[1], e2[0], 0]], dtype = np.float32)
-    term1 = np.dot(e2_skew, F)
-    term2 = np.outer(e2, np.array([1, 1, 1], dtype=np.float32))
-    combined = term1 + term2
-    P2 = np.hstack((combined, e2.reshape(3, 1)))
-    # Scale camera 2 matrix to match real-world units
-    P2[:, :3] = P2[:, :3] * scale_factor
+    # Simple triangulation:
+    # Camera 1 sees (Y,Z)
+    # Camera 2 sees (X,Z)
+    X = point2_transformed[0]
+    Y = point1[0]
     
-    return P1, P2, scale_factor
-"""
+    # Average Z from both cameras (after transformation)
+    Z_cam1 = point1[1]
+    Z_cam2 = point2_transformed[1]
+    Z = (Z_cam1 + Z_cam2) / 2
+    
+    return X, Y, Z
+
 def main():
     global ser
     
-    # Initialize video sources
+    # Initialize video sources and serial
     cap1, cap2 = choose_video_source()
     initialize_serial()
-    write_to_serial(0, 0, 0)  # Send move command
-    ret, frame = cap1.read()
-    ret2, frame2 = cap2.read()
-    red_pos_yz = detect_red_marker(frame, 3)
-    red_pos_xz = detect_red_marker(frame2, 3)
-    # Step 1: Get origin position in both cameras
-    print("=== STEP 1: Select origin position ===")
-    input("Place the robot at origin position and press Enter...")
-    origin1 = red_pos_xz
-    origin2 = red_pos_yz
-    #origin1, origin2 = get_marker_positions(cap1, cap2)
+    
+    # Move to origin position
+    write_to_serial(0, 0, 0)
+    time.sleep(2)
+    
+    # Get origin positions
+    print("=== STEP 1: Get origin position ===")
+    origin1 = detect_red_marker(cap1.read()[1], 3)  # Camera 1 sees YZ plane
+    origin2 = detect_red_marker(cap2.read()[1], 3)  # Camera 2 sees XZ plane
+    
     if origin1 is None or origin2 is None:
-        print("Could not detect marker in one or both cameras")
+        print("Could not detect markers at origin")
         return
     
-    print(f"Origin positions - Cam1: {origin1}, Cam2: {origin2}")
+    print(f"Origin positions - Cam1 (YZ): {origin1}, Cam2 (XZ): {origin2}")
     
-    # Step 2: Move robot up and get new position
-    print("\nMoving robot up")
-    input("Press Enter to move robot up...")
-    write_to_serial(200, 200, 200)  # Send move command
-    time.sleep(2)  # Wait for movement to complete
-    red_pos_yz = detect_red_marker(frame, 3)
-    red_pos_xz = detect_red_marker(frame2, 3)
-    #moved1, moved2 = get_marker_positions(cap1, cap2)
-    moved1, moved2  = red_pos_xz, red_pos_yz
+    # Move up by 200mm
+    print("\n=== STEP 2: Moving up 200mm ===")
+    write_to_serial(200, 200, 200)
+    time.sleep(2)
+    
+    # Get moved positions
+    moved1 = detect_red_marker(cap1.read()[1], 3)
+    moved2 = detect_red_marker(cap2.read()[1], 3)
+    
     if moved1 is None or moved2 is None:
-        print("Could not detect marker after movement")
+        print("Could not detect markers after movement")
         return
-    if moved1 is None or moved2 is None:
-        print("Could not detect marker after movement")
-        return
-    time.sleep(2)  # Send move command
+    
     print(f"Moved positions - Cam1: {moved1}, Cam2: {moved2}")
-    write_to_serial(0, 0, 0) 
-    # Step 3: Calculate camera matrices and scaling
-    print("\n=== STEP 3: Calculating camera matrices ===")
-    print (origin1, moved1, origin2, moved2)
-    x, y1, y2, z, scale_factor = calculate_camera_matrices(origin1, moved1, origin2, moved2)
-    #P1, P2, scale_factor = calculate_camera_matrices(origin1, moved1, origin2, moved2)
-    print (x, y1, y2, z, scale_factor )
-    #print(f"Scale factor (cam2 to cam1): {scale_factor}")
-    print("Camera 1 projection matrix:")
-    #print(P1)
-    print("Camera 2 projection matrix (scaled):")
-    #print(P2)
     
-    # Step 4: Continuous 3D position tracking
-    print("\n=== STEP 4: 3D Position Tracking ===")
+    # Calculate calibration parameters
+    print("\n=== STEP 3: Calculate calibration ===")
+    scale_factor, translation, angle = calculate_camera_matrices(
+        origin1, moved1, origin2, moved2
+    )
+    
+    print(f"Scale factor (cam2 to cam1): {scale_factor}")
+    print(f"Translation: {translation}")
+    print(f"Rotation angle (rad): {angle}")
+    
+    # Continuous 3D tracking
+    print("\n=== STEP 4: 3D Tracking ===")
     print("Press ESC to exit...")
     
     while True:
-        # Get current marker positions
-        marker1, marker2 = get_marker_positions(cap1, cap2)
-        if marker1 is None or marker2 is None:
-            print("Could not detect markers")
+        ret1, frame1 = cap1.read()
+        ret2, frame2 = cap2.read()
+        
+        if not ret1 or not ret2:
             continue
+            
+        point1 = detect_red_marker(frame1, 3)
+        point2 = detect_red_marker(frame2, 3)
         
-        # Apply scale to camera2 points
-        marker2_scaled = (int(marker2[0] * scale_factor), 
-                          int(marker2[1] * scale_factor))
-        
-        # Triangulate 3D position
-        #point_3d = triangulate_3d_point(marker1, marker2_scaled, P1, P2)
-        
-        #print(f"3D Position (mm): X={point_3d[0]:.1f}, Y={point_3d[1]:.1f}, Z={point_3d[2]:.1f}")
+        if point1 and point2:
+            # Calculate 3D position
+            X, Y, Z = triangulate_3d_position(point1, point2, scale_factor, translation, angle)
+            
+            # Display results
+            print(f"3D Position: X={X:.1f}mm, Y={Y:.1f}mm, Z={Z:.1f}mm")
+            
+            # Draw markers
+            cv2.circle(frame1, point1, 10, (0,255,0), 2)
+            cv2.circle(frame2, point2, 10, (0,255,0), 2)
+            
+        cv2.imshow("Camera 1 (YZ)", frame1)
+        cv2.imshow("Camera 2 (XZ)", frame2)
         
         if cv2.waitKey(100) & 0xFF == 27:
             break
@@ -440,7 +431,7 @@ def main():
     cap1.release()
     cap2.release()
     cv2.destroyAllWindows()
-    if ser is not None:
+    if ser:
         ser.close()
 
 if __name__ == "__main__":
