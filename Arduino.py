@@ -45,9 +45,9 @@ class ArduinoComm:
             line_v = line.split(",")
 
             try:
-                data_buffer.append([float(line_v[0]), float(line_v[1]), float(line_v[2]),
-                                    float(line_v[3]), float(line_v[4]), float(line_v[5])])
-                # data_buffer.append([float(line_v[0]), float(line_v[1]), float(line_v[2]), 0, 0, 0])
+                # data_buffer.append([float(line_v[0]), float(line_v[1]), float(line_v[2]),
+                #                     float(line_v[3]), float(line_v[4]), float(line_v[5])])
+                data_buffer.append([float(val) for val in line_v])
             except ValueError:
                 print("Invalid data received:", line)
         
