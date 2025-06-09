@@ -339,12 +339,12 @@ def update_control_loop(tipCoords, kin, PathCoords, arduino, dt):
     q_u_est = q_next[3:]  # Remaining elements are unactuated variables
 
     return (
-        softPts,        # Soft body points coordinates
-        skelPts,        # Skeleton points coordinates
-        q_next,         # Current configuration variables (q_est)
-        q_0_current,    # Configuration under no external load
-        q_a_est,        # Estimated actuated variables (chamber lengths)
-        q_u_est,        # Estimated unactuated variables
+        softPts,        # body coordinates
+        skelPts,        # Skeleton coordinates
+        q_next,         # Current configuration(q_est)
+        q_0_current,    # no load config
+        q_a_est,        # Estimated chamber lengths
+        q_u_est,        # Estimated unactuated variable
         delta_u,        # Control input (du)
         volumes,        # Current chamber volumes
         pressures,      # Current chamber pressures
@@ -530,10 +530,10 @@ def main():
                 'estimated_tip_position': pcc_coords[-1].tolist() if pcc_coords is not None else [None, None, None],
                 'real_position': [x_xz, y_yz, z_yz],
                 'backbone_coordinates': pcc_coords.tolist() if pcc_coords is not None else None,
-                'q_est': None,  # Replace with actual values if available
-                'q_a_est': None, # Replace with actual values if available
-                'q_u_est': None, # Replace with actual values if available
-                'du': None,     # Replace with actual chamber volumes if available
+                'q_est': q_0_current,  # Replace with actual values if available
+                'q_a_est': q_a_est, # Replace with actual values if available
+                'q_u_est': q_u_est, # Replace with actual values if available
+                'du': delta_u,     # Replace with actual chamber volumes if available
                 'notes': ''
             }
         
@@ -557,7 +557,9 @@ def main():
                 keys_pressed.add('m')
                 print("Pausing and retracting robot")
                 # print(x_mm, y_mm)
-            (pcc_coords, rigid_coords) = update_control_loop(np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
+            (pcc_coords, rigid_coords, q_next, q_0_current, q_a_est, q_u_est, 
+         delta_u, volumes, pressures, u_target, new_vol) = update_control_loop(
+            np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
 
 
             overlay = render_matplotlib_overlay(origin_yz, red_pos_yz, frame, pcc_coords, rigid_coords, pathCoords, scale_yz, rotation_matrix_yz, width, height,'yz')
