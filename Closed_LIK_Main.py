@@ -6,7 +6,8 @@ from Arduino import ArduinoComm
 from Arduino import ArduinoConnect
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.figure import Figure
-
+import csv
+from datetime import datetime
 from kine_dyna import Kinematics
 
 
@@ -512,38 +513,55 @@ def main():
     time_prev = time_start - 0.1
 
     while cap.isOpened():
-        time_now = time.time()
-        t_elapsed = time_now - time_start
-        dt = time_now - time_prev
-        time_prev = time_now
+    time_now = time.time()
+    t_elapsed = time_now - time_start
+    dt = time_now - time_prev
+    time_prev = time_now
 
-        ret, frame = cap.read()
-        ret2, frame2 = cap2.read()
-        if not ret or not ret2:
-            break
+    ret, frame = cap.read()
+    ret2, frame2 = cap2.read()
+    if not ret or not ret2:
+        break
 
-        red_pos_yz = detect_red_marker(frame, 3)
-        red_pos_xz = detect_red_marker(frame2, 3)
+    red_pos_yz = detect_red_marker(frame, 3)
+    red_pos_xz = detect_red_marker(frame2, 3)
 
-        if red_pos_yz and red_pos_xz:
-            y_yz, z_yz, rotation_matrix_yz= transform_to_global(red_pos_yz, origin_yz, y_axis_vec, scale_yz, 1)
-            x_xz, z_xz, rotation_matrix_xz= transform_to_global(red_pos_xz, origin_xz, x_axis_vec, scale_xz, 2)
-            
-            # print(y_yz, z_yz, rotation_matrix_yz)
-            # print(x_xz, z_xz, rotation_matrix_xz)
-            cv2.circle(frame, red_pos_yz, 5, (0, 255, 255), -1)
-            cv2.putText(frame, f"({y_yz:.2f}, {z_yz:.2f}) mm", (red_pos_yz[0]+10, red_pos_yz[1]),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
-            
+    if red_pos_yz and red_pos_xz:
+        y_yz, z_yz, rotation_matrix_yz = transform_to_global(red_pos_yz, origin_yz, y_axis_vec, scale_yz, 1)
+        x_xz, z_xz, rotation_matrix_xz = transform_to_global(red_pos_xz, origin_xz, x_axis_vec, scale_xz, 2)
+        
+        # Get current position and other data
+        (pcc_coords, rigid_coords) = update_control_loop(np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
+        
+        # Prepare data for recording
+        data = {
+            'time': t_elapsed,
+            'estimated_tip_position': pcc_coords[-1].tolist() if pcc_coords is not None else [None, None, None],
+            'real_position': [x_xz, y_yz, z_yz],
+            'backbone_coordinates': pcc_coords.tolist() if pcc_coords is not None else None,
+            'q_est': None,  # Replace with actual values if available
+            'q_a_est': None, # Replace with actual values if available
+            'q_u_est': None, # Replace with actual values if available
+            'du': None,     # Replace with actual chamber volumes if available
+            'notes': ''
+        }
+        
+        # Record data to CSV
+        with open('tracking_data.csv', 'a', newline='') as f:
+            writer = csv.writer(f)
+            if f.tell() == 0:  # Write header if file is empty
+                writer.writerow(data.keys())
+            writer.writerow(data.values())
+        
+        # Rest of your visualization code...
+        cv2.circle(frame, red_pos_yz, 5, (0, 255, 255), -1)
+        cv2.putText(frame, f"({y_yz:.2f}, {z_yz:.2f}) mm", (red_pos_yz[0]+10, red_pos_yz[1]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
+        
+        cv2.circle(frame2, red_pos_xz, 5, (0, 255, 255), -1)
+        cv2.putText(frame2, f"({x_xz:.2f}, {z_xz:.2f}) mm", (red_pos_xz[0]+10, red_pos_xz[1]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
 
-            # print('y_yz: {:.2f}, z_yz: {:.2f}' .format(y_yz, z_yz))
-            # print('red_pos_yz: {}' .format(red_pos_yz))
-            
-           
-
-            cv2.circle(frame2, red_pos_xz, 5, (0, 255, 255), -1)
-            cv2.putText(frame2, f"({x_xz:.2f}, {z_xz:.2f}) mm", (red_pos_xz[0]+10, red_pos_xz[1]),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
 
             keys_pressed = set()
             if cv2.waitKey(1) & 0xFF == ord('m'):
