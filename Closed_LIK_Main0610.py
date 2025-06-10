@@ -226,16 +226,34 @@ def remove_white_background_hsv(image, h_low=0, h_high=179, s_low=0, s_high=32, 
     #return result
     return masked_frame
 
-
-
-
-def update_control_loop(tipCoords,kin,PathCoords, arduino, dt):
+def update_control_loop(tipCoords, kin, PathCoords, arduino, dt):
+    """
+    Update the control loop for the soft robot.
+    
+    Returns:
+        tuple: Contains multiple values for data recording:
+            - softPts (np.array): Soft body points coordinates
+            - skelPts (np.array): Skeleton points coordinates
+            - q_next (np.array): Current configuration variables (including actuated and unactuated)
+            - q_ref (np.array): Configuration under no external load
+            - q_a_est (np.array): Estimated actuated variables (chamber lengths)
+            - q_u_est (np.array): Estimated unactuated variables
+            - du (np.array): Delta u (control input)
+            - volumes (np.array): Current chamber volumes
+            - pressures (np.array): Current chamber pressures
+            - u_target (np.array): Target chamber lengths
+            - new_vol (np.array): New target volumes
+    """
     global i_goal
     global tip_prev, goal_prev
     global isManualMode, keys_pressed, t_elapsed
     global softPts, skelPts
+    global q_ref_prev    # print('U_ells: {}' .format(u_ells))
     global q_prev
-    global q_ref_prev
+    # print('q_next: {}' .format(q_next))
+
+    # print('softTip: {}'. format(softPts[:,-1]))
+    # print('hardTip: {}'. format(skelPts[:,-1]))
 
 
     _, numGoals = PathCoords.shape
@@ -246,7 +264,7 @@ def update_control_loop(tipCoords,kin,PathCoords, arduino, dt):
     #--------------get arduino data----------
     arduino_data = arduino.receive_data()
     pressures = np.maximum(np.array(arduino_data)[0:3] / 1000, -12/1000)   # get pressures and convert to N/mm^2 for old Jacobian, keep within sensor ranges
-    volumes = np.maximum( np.array(arduino_data[3:6])/ 1000, 0)          # get vol from arduino in  uL, convert to mL for model, keep within real volumes
+    volumes = np.maximum(np.array(arduino_data[3:6])/1000, 0)              # get vol from arduino in uL, convert to mL for model, keep within real volumes
     V1, V2, V3 = volumes[0], volumes[1] + 0.00001, volumes[2] + 0.0000015
     P1, P2, P3 = pressures[0], pressures[1] + 0.0000001, pressures[2] + 0.000000015
     l1, l2, l3 = kin.volume_to_length(V1, V2, V3)
@@ -256,153 +274,126 @@ def update_control_loop(tipCoords,kin,PathCoords, arduino, dt):
     K = np.diag([15,15,0.5,15,15,0.5,15,15,0.5])
     D = np.diag([5,5,5,5,5,5,5,5,5])
 
-
-    # print('v1: {}, v2: {}, v3: {}' .format(V1,V2,V3))
-
-    # print('l1: {}, l2: {}, l3: {}' .format(l1,l2,l3))
-
-
     _, numGoals = PathCoords.shape
-
 
     f_ext_fun = lambda t: [0, 0, 0]
 
-    # compute q_0, config variables under  no external load)
-    q_ref    = kin.q_no_load(u_ells)
+    # compute q_0, config variables under no external load
+    q_ref = kin.q_no_load(u_ells)
 
     q_ref_dot = (q_ref - q_ref_prev)/dt
 
+    # compute next configuration using dynamics
+    q_next = kin.q_dynamics_new(q_prev, q_ref, q_ref_dot, f_ext_fun, t_elapsed, dt, K, D)
 
-    # print('q_0: {}' .format(q0))
-
-    q_next = kin.q_dynamics_new(q_prev, q_ref, q_ref_dot, f_ext_fun, t_elapsed, dt, K,D)
-
-    softPts, skelPts,_ = kin.Compute_Soft_Curve(q_next)
+    # Compute soft curve and skeleton points
+    softPts, skelPts, _ = kin.Compute_Soft_Curve(q_next)
     pred_tip = kin.Compute_actual_tip(q_next)
-
-
-    skelPts = np.append(skelPts, pred_tip.reshape(-1,1), axis = 1)
-
-
+    skelPts = np.append(skelPts, pred_tip.reshape(-1,1), axis=1)
 
     goalCoords = PathCoords[:,i_goal]
-    error      = goalCoords - tipCoords
-    tip_vel    = (tipCoords - tip_prev)/dt
-
+    error = goalCoords - tipCoords
+    tip_vel = (tipCoords - tip_prev)/dt
     # print('U_ells: {}' .format(u_ells))
     # print('q_next: {}' .format(q_next))
 
     # print('softTip: {}'. format(softPts[:,-1]))
     # print('hardTip: {}'. format(skelPts[:,-1]))
 
-   
-
-    # -----------prepare arduino inputs---------------
+    # Initialize delta_u
     delta_u = np.array([0,0,0])
     commands = [0,0,0,0,0]
 
-    # if the robot has reached the first point along the circle move on to the next
+    # Check if robot reached current goal
     if np.linalg.norm(error) < 0.8:
         print("reached goal with final coords:", tipCoords)
         i_goal = ((i_goal+1) % numGoals)
-        # if i_goal < len(circleCoords[0,:])-1:
-        #     i_goal += 1
-        # else:
-        #     i_goal = 0
 
     if 'm' in keys_pressed: # if 'm' key is pressed, toggle manual mode on/off
         print("Manual Mode: ", isManualMode)
         commands = [1, -1, -1, -1, -1]
-        # time.sleep(0.2)
     else:
         try:
             # Calculate Jacobian with regularization
             J_ac = kin.Actuated_Jacobian(q_next)
-            U, S, Vh = np.linalg.svd(J_ac, full_matrices = False)
+            U, S, Vh = np.linalg.svd(J_ac, full_matrices=False)
             V = Vh.T
             sigma_0 = 0.01*max(S)
             nu = 50
-            h = (S**3 +nu*S**2 + 2*S + 2*sigma_0)/(S**2 + nu*S + 2)
+            h = (S**3 + nu*S**2 + 2*S + 2*sigma_0)/(S**2 + nu*S + 2)
 
             H_inv = np.diag(1.0/h)
             J_ac_inv = V @ H_inv @ U.T
 
             # error_norm = np.linalg.norm(error)
-
             # rate_fb = 0.23 * (1.0  + max(0.0, 2.0 - error_norm))
             rate_fb = 0.5
             rate_ff = 5e-3
 
-            delta_u = J_ac_inv @ (rate_fb *error + rate_ff*(-tip_vel))
+            delta_u = J_ac_inv @ (rate_fb * error + rate_ff * (-tip_vel))
 
         except np.linalg.LinAlgError:
-            # If SVD fails
             print("SVD failed to converge - using previous command")
-            delta_u = np.zeros(3)  # Or np.random.normal(0, 0.01, 2)
+            delta_u = np.zeros(3)
 
+    # Calculate target lengths and volumes
+    u_target = np.round(np.clip(u_ells + kin.gain*delta_u, 0, 50), 3)
+    new_vol = np.clip(kin.lengths_to_volumes(u_target, base_height), 0, 500)
 
-    u_target = np.round(np.clip( u_ells + kin.gain*delta_u, 0, 50),3)
-
+    # Update previous values
     tip_prev = tipCoords
-    goal_prev = goalCoords# Call and define CC kinematics class
-    q_prev = q_next
+    goal_prev = goalCoords
     q_ref_prev = q_ref
+    q_prev = q_next
 
-    
+    # Send commands to arduino
+    arduino.send_data(np.array([new_vol[0], new_vol[1], new_vol[2]]), commands)
 
+    # Extract actuated and unactuated variables from q_next
+    # Assuming q_next structure: [q_a (actuated), q_u (unactuated)]
+    q_a_est = q_next[:3]  # First 3 elements are actuated variables
+    q_u_est = q_next[3:]  # Remaining elements are unactuated variables
 
-    ''' This will need some work, going from u_ells = q_a -> Tau,
-        will need to consider external forces, material properties and underactuated vars'''
-    new_vol = np.clip( kin.lengths_to_volumes(u_target, base_height), 0, 500 )
-
-    arduino.send_data(np.array([new_vol[0], new_vol[1], new_vol[2]]), commands) # send new set pressure and commands to arduino
-
-    # print(u_ells, delta_u, u_target, new_vol)
-    # print(tipCoords, goalCoords, np.linalg.norm(error), volumes)
-
-    # print(tipCoords, skelPts[:,-1], softPts[:,-1])
-    samples = 100
-    # print("TipCoord: {}, Predicted_Coord: {}".format(tipCoords, predtipcoord))
-    # print("Skel_x: {}, Skel_Y: {}, Skel_Z:{}". format(skelPts[:,1], skelPts[:,2], skelPts[:,3]))
-    # print("U_ells: {}".format(u_ells))
-
-    return (softPts, skelPts)
+    return (
+        softPts,        # body coordinates
+        skelPts,        # Skeleton coordinates
+        q_next,         # Current configuration(q_est)
+        q_ref,    # no load config
+        q_a_est,        # Estimated chamber lengths
+        q_u_est,        # Estimated unactuated variable
+        delta_u,        # Control input (du)
+        volumes,        # Current chamber volumes
+        pressures,      # Current chamber pressures
+        u_target,       # Target chamber lengths
+        new_vol         # New target volumes
+    )
 
 
 def main():
     global tip_prev, goal_prev, keys_pressed, t_elapsed
     global softPts, skelPts
-    global q_prev
     global q_ref_prev
+    global q_prev
 
     # ----------------Arduino connection-------------
     connect = ArduinoConnect('/dev/ttyACM0', 250000)  # Change COM6 if needed
     arduino = ArduinoComm(connect)
 
-    base_height = np.array([8,8,8])
-
-
+    # Call and define CC kinematics class
     kin = Kinematics()
 
+    base_height = np.array([8,8,8])
 
     arduino_data = arduino.receive_data()
-    volumes = np.maximum( np.array(arduino_data[3:6])/ 1000, 0)          # get vol from arduino in  uL, convert to mL for model, keep within real volumes
+    volumes = np.maximum(np.array(arduino_data[3:6])/1000, 0)              # get vol from arduino in uL, convert to mL for model, keep within real volumes
     V1, V2, V3 = volumes[0], volumes[1] + 0.00001, volumes[2] + 0.0000015
     l1, l2, l3 = kin.volume_to_length(V1, V2, V3)
     u_ells = np.array([l1, l2, l3]) + base_height
 
 
+    q_ref_prev = kin.q_no_load(u_ells)
 
-    q_ref_prev  = kin.q_no_load(u_ells)
-
-    q_prev = q_ref_prev.copy()
-
-
-
-
-
-    # Call and define CC kinematics class
-    
+    q_prev     = q_ref_prev.copy()
 
 
 
@@ -539,7 +530,8 @@ def main():
 
     time_start = time.time()
     time_prev = time_start - 0.1
-
+    with open('tracking_data.csv', 'a', newline='') as f:
+        writer = csv.writer(f)
     while cap.isOpened():
         time_now = time.time()
         t_elapsed = time_now - time_start
@@ -559,7 +551,9 @@ def main():
             x_xz, z_xz, rotation_matrix_xz = transform_to_global(red_pos_xz, origin_xz, x_axis_vec, scale_xz, 2)
         
             # Get current position and other data
-            (pcc_coords, rigid_coords) = update_control_loop(np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
+            (pcc_coords, rigid_coords, q_next, q_ref, q_a_est, q_u_est, 
+         delta_u, volumes, pressures, u_target, new_vol) = update_control_loop(
+            np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
         
             # Prepare data for recording
             data = {
@@ -571,9 +565,13 @@ def main():
                 'q_a_est': None, # Replace with actual values if available
                 'q_u_est': None, # Replace with actual values if available
                 'du': None,     # Replace with actual chamber volumes if available
+                'q_ref': q_ref,  # Replace with actual values if available
+                'q_a_est': q_a_est, # Replace with actual values if available
+                'q_u_est': q_u_est, # Replace with actual values if available
+                'du': delta_u,     # Replace with actual chamber volumes if available
                 'notes': ''
             }
-        
+
             # Record data to CSV
             with open('tracking_data.csv', 'a', newline='') as f:
                 writer = csv.writer(f)
@@ -583,7 +581,6 @@ def main():
             cv2.circle(frame, red_pos_yz, 5, (0, 255, 255), -1)
             cv2.putText(frame, f"({y_yz:.2f}, {z_yz:.2f}) mm", (red_pos_yz[0]+10, red_pos_yz[1]),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
-        
             cv2.circle(frame2, red_pos_xz, 5, (0, 255, 255), -1)
             cv2.putText(frame2, f"({x_xz:.2f}, {z_xz:.2f}) mm", (red_pos_xz[0]+10, red_pos_xz[1]),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
@@ -594,7 +591,9 @@ def main():
                 keys_pressed.add('m')
                 print("Pausing and retracting robot")
                 # print(x_mm, y_mm)
-            (pcc_coords, rigid_coords) = update_control_loop(np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
+            (pcc_coords, rigid_coords, q_next, q_ref, q_a_est, q_u_est, 
+         delta_u, volumes, pressures, u_target, new_vol) = update_control_loop(
+            np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
 
 
             overlay = render_matplotlib_overlay(origin_yz, red_pos_yz, frame, pcc_coords, rigid_coords, pathCoords, scale_yz, rotation_matrix_yz, width, height,'yz')
