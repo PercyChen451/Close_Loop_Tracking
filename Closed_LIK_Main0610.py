@@ -380,7 +380,8 @@ def main():
     global softPts, skelPts
     global q_ref_prev
     global q_prev
-
+    csv_file = open(csv_filename, 'w', newline='')
+    writer = csv.writer(csv_file)
     # ----------------Arduino connection-------------
     connect = ArduinoConnect('/dev/ttyACM0', 250000)  # Change COM6 if needed
     arduino = ArduinoComm(connect)
