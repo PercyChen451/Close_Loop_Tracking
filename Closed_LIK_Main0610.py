@@ -153,7 +153,13 @@ def transform_to_global(pt, origin, x_axis_vec, scale, n=1):
     ])
 
     return x_mm, y_mm, rotation_matrix
-
+    
+def format_4sf(number):
+    #4 significant figures
+    if isinstance(number, (list, np.ndarray)):
+        return [float(f"{x:.4g}") for x in number]
+    return float(f"{number:.4g}")
+    
 def render_matplotlib_overlay(origin,tip_pos, image, pcc_coords, rigid_coords, goal_coords, scale, rotation_matrix, width, height, plane):
     height, width = image.shape[:2]
     fig = Figure(figsize=(width/100, height/100), dpi=100, facecolor='none')
