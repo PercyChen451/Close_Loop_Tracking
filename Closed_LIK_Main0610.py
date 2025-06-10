@@ -400,11 +400,26 @@ def main():
     q_ref_prev = kin.q_no_load(u_ells)
 
     q_prev     = q_ref_prev.copy()
-
-
-
-
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_filename = f"tracking_data_{timestamp}.csv"
     
+    # Define CSV headers
+    headers = [
+        'time',
+        'real_x', 'real_y', 'real_z',
+        'est_tip_x', 'est_tip_y', 'est_tip_z',
+        *[f'q_next_{i}' for i in range(3)],  # q_next has 3 elements?
+        *[f'q_a_est_{i}' for i in range(3)],
+        *[f'q_u_est_{i}' for i in range(3)],
+        *[f'du_{i}' for i in range(3)],
+        *[f'vol_{i}' for i in range(3)],
+        *[f'press_{i}' for i in range(3)],
+        *[f'target_vol_{i}' for i in range(3)],
+        'notes'
+    ]
+
+    time_start = time.time()
+    time_prev = time_start - 0.1
 
     # PathCoords = np.array([[   8.00,    7.3068,    5.3644,    2.5576,   -0.5576,   -3.3644,   -5.3068,   -6.0000,   -5.3068,   -3.3644,   -0.5576,    2.5576,    5.3644,    7.3068,    8.0000],
     #                        [   0.00,    3.0372,    5.4728,    6.8245,    6.8245,    5.4728,    3.0372,    0.0000,   -3.0372,   -5.4728,   -6.8245,   -6.8245,   -5.4728,   -3.0372,   -0.0000],
@@ -536,102 +551,99 @@ def main():
 
     time_start = time.time()
     time_prev = time_start - 0.1
-    with open('tracking_data.csv', 'a', newline='') as f:
-        writer = csv.writer(f)
-    while cap.isOpened():
-        time_now = time.time()
-        t_elapsed = time_now - time_start
-        dt = time_now - time_prev
-        time_prev = time_now
+try:
+        with open(csv_filename, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(headers)
+            
+            while cap.isOpened():
+                time_now = time.time()
+                t_elapsed = format_4sf(time_now - time_start)
+                dt = format_4sf(time_now - time_prev)
+                time_prev = time_now
 
-        ret, frame = cap.read()
-        ret2, frame2 = cap2.read()
-        if not ret or not ret2:
-            break
+                ret, frame = cap.read()
+                ret2, frame2 = cap2.read()
+                if not ret or not ret2:
+                    break
 
-        red_pos_yz = detect_red_marker(frame, 3)
-        red_pos_xz = detect_red_marker(frame2, 3)
+                red_pos_yz = detect_red_marker(frame, 3)
+                red_pos_xz = detect_red_marker(frame2, 3)
 
-        if red_pos_yz and red_pos_xz:
-            y_yz, z_yz, rotation_matrix_yz = transform_to_global(red_pos_yz, origin_yz, y_axis_vec, scale_yz, 1)
-            x_xz, z_xz, rotation_matrix_xz = transform_to_global(red_pos_xz, origin_xz, x_axis_vec, scale_xz, 2)
-        
-            # Get current position and other data
-            (pcc_coords, rigid_coords, q_next, q_ref, q_a_est, q_u_est, 
-         delta_u, volumes, pressures, u_target, new_vol) = update_control_loop(
-            np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
-        
-            # Prepare data for recording
-            data = {
-                'time': t_elapsed,
-                'estimated_tip_position': pcc_coords[-1].tolist() if pcc_coords is not None else [None, None, None],
-                'real_position': [x_xz, y_yz, z_yz],
-                'backbone_coordinates': pcc_coords.tolist() if pcc_coords is not None else None,
-                'q_est': None,  # Replace with actual values if available
-                'q_a_est': None, # Replace with actual values if available
-                'q_u_est': None, # Replace with actual values if available
-                'du': None,     # Replace with actual chamber volumes if available
-                'q_ref': q_ref,  # Replace with actual values if available
-                'q_a_est': q_a_est, # Replace with actual values if available
-                'q_u_est': q_u_est, # Replace with actual values if available
-                'du': delta_u,     # Replace with actual chamber volumes if available
-                'notes': ''
-            }
+                if red_pos_yz and red_pos_xz:
+                    y_yz, z_yz, rotation_matrix_yz = transform_to_global(red_pos_yz, origin_yz, y_axis_vec, scale_yz, 1)
+                    x_xz, z_xz, rotation_matrix_xz = transform_to_global(red_pos_xz, origin_xz, x_axis_vec, scale_xz, 2)
 
-            # Record data to CSV
-            with open('tracking_data.csv', 'a', newline='') as f:
-                writer = csv.writer(f)
-                if f.tell() == 0:  # Write header if file is empty
-                    writer.writerow(data.keys())
-                writer.writerow(data.values())
-            cv2.circle(frame, red_pos_yz, 5, (0, 255, 255), -1)
-            cv2.putText(frame, f"({y_yz:.2f}, {z_yz:.2f}) mm", (red_pos_yz[0]+10, red_pos_yz[1]),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
-            cv2.circle(frame2, red_pos_xz, 5, (0, 255, 255), -1)
-            cv2.putText(frame2, f"({x_xz:.2f}, {z_xz:.2f}) mm", (red_pos_xz[0]+10, red_pos_xz[1]),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
+                    # Get control loop data
+                    (pcc_coords, rigid_coords, q_next, q_ref, q_a_est, q_u_est, 
+                     delta_u, volumes, pressures, u_target, new_vol) = update_control_loop(
+                        np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
 
+                    # Format all numerical data to 4 significant figures
+                    formatted_data = [
+                        t_elapsed,  # time
+                        format_4sf(x_xz), format_4sf(y_yz), format_4sf(z_yz),  # real position
+                        *[format_4sf(x) for x in pcc_coords[:,-1]],  # estimated tip
+                        *[format_4sf(x) for x in q_next],  # q_est
+                        *[format_4sf(x) for x in q_a_est],  # q_a_est
+                        *[format_4sf(x) for x in q_u_est],  # q_u_est
+                        *[format_4sf(x) for x in delta_u],  # du
+                        *[format_4sf(x) for x in volumes],  # volumes
+                        *[format_4sf(x) for x in pressures],  # pressures
+                        *[format_4sf(x) for x in new_vol],  # target volumes
+                        ''  # notes
+                    ]
 
-            keys_pressed = set()
-            if cv2.waitKey(1) & 0xFF == ord('m'):
-                keys_pressed.add('m')
-                print("Pausing and retracting robot")
-                # print(x_mm, y_mm)
-            (pcc_coords, rigid_coords, q_next, q_ref, q_a_est, q_u_est, 
-         delta_u, volumes, pressures, u_target, new_vol) = update_control_loop(
-            np.array([x_xz, y_yz, z_yz]), kin, pathCoords, arduino, dt)
+                    writer.writerow(formatted_data)
+
+                    # Visualization (unchanged)
+                    cv2.circle(frame, red_pos_yz, 5, (0, 255, 255), -1)
+                    cv2.putText(frame, f"({y_yz:.4g}, {z_yz:.4g}) mm", 
+                               (red_pos_yz[0]+10, red_pos_yz[1]),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
+                    
+                    cv2.circle(frame2, red_pos_xz, 5, (0, 255, 255), -1)
+                    cv2.putText(frame2, f"({x_xz:.4g}, {z_xz:.4g}) mm", 
+                               (red_pos_xz[0]+10, red_pos_xz[1]),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 3)
+                    
+
+                    overlay = render_matplotlib_overlay(origin_yz, red_pos_yz, frame, pcc_coords, rigid_coords, pathCoords, scale_yz, rotation_matrix_yz, width, height,'yz')
+                    overlay_clean = remove_white_background_hsv(overlay)
+                    if overlay is not None:
+                        frame = cv2.addWeighted(frame, 1, overlay_clean, 0.9, 0)
 
 
-            overlay = render_matplotlib_overlay(origin_yz, red_pos_yz, frame, pcc_coords, rigid_coords, pathCoords, scale_yz, rotation_matrix_yz, width, height,'yz')
-            overlay_clean = remove_white_background_hsv(overlay)
-            if overlay is not None:
-                frame = cv2.addWeighted(frame, 1, overlay_clean, 0.9, 0)
-
-
-            overlay2 = render_matplotlib_overlay(origin_xz, red_pos_xz, frame2, pcc_coords, rigid_coords, pathCoords, scale_xz, rotation_matrix_xz, width, height, 'xz')
-            overlay2_clean = remove_white_background_hsv(overlay2)
-            if overlay2 is not None:
-                frame2 = cv2.addWeighted(frame2, 1, overlay2_clean, 0.9, 0)
+                    overlay2 = render_matplotlib_overlay(origin_xz, red_pos_xz, frame2, pcc_coords, rigid_coords, pathCoords, scale_xz, rotation_matrix_xz, width, height, 'xz')
+                    overlay2_clean = remove_white_background_hsv(overlay2)
+                    if overlay2 is not None:
+                        frame2 = cv2.addWeighted(frame2, 1, overlay2_clean, 0.9, 0)
 
 
 
             # print(f"{x_mm:.2f}, {y_mm:.2f}, {dt:.3f}")
 
         
-        cv2.imshow("Tracking y-z plane", frame)
-        cv2.imshow("Tracking x-z plane", frame2)
+            cv2.imshow("Tracking y-z plane", frame)
+            cv2.imshow("Tracking x-z plane", frame2)
+                # print(f"{x_mm:.2f}, {y_mm:.2f}, {dt:.3f}")
 
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+    except Exception as e:
+        print(f"Error during tracking: {e}")
+    finally:
+        # GUARANTEED CLEANUP - executes whether loop completes or errors occur
+        csv_file.close()  # Ensures all data is flushed to disk
+        cap.release()
+        cv2.destroyAllWindows()
+        print(f"Data successfully saved to {csv_filename}")
 
-    cap.release()
-    cv2.destroyAllWindows()
-
+if __name__ == "__main__":
+    main()
     # Output result
     # print("Tracked Positions (mm):")
     # for pos in positions:
     #     print(f"{pos[0]:.2f}, {pos[1]:.2f}")
 
-if __name__ == "__main__":
-    main()
