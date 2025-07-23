@@ -260,7 +260,7 @@ def draw_pose(params, frames, R_tip_0, t_tip_0, T_b0, backbone):
         cv2.polylines(frame, [img_backbone], False, (255, 255, 0), 2)   # Backbone in cyan
     return
 
-def update_control_loop(tipCoords, R_tip, kin, PathCoords, base_height, arduino, sensor, dt):
+def update_control_loop(tipCoords, R_tip, kin, PathCoords, base_height, arduino, sensor, dt, ser, offsets):
     """
     Update the control loop for the soft robot.
     
@@ -322,54 +322,48 @@ def update_control_loop(tipCoords, R_tip, kin, PathCoords, base_height, arduino,
     _, numGoals = PathCoords.shape
 
     #=============== get force ============
-    if sensor is not None:
-        offsets = calibrate_force_sensor()
-        try:
-            while True:
-                SERIAL_PORT = '/dev/ttyUSB0'
-                BAUD_RATE = 115200
-                TIMEOUT = 1
-                ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
-                line = ser.readline().decode('ascii', errors='ignore')
-                data = parse_serial_line(line)
-                #print("ForceSensor Active")
-                if data:
-                    bx = data[0] - offsets['bx1']
-                    by = data[1] - offsets['by1']
-                    bz = data[2] - offsets['bz1']
-                    bx2 = data[3] - offsets['bx2']
-                    by2 = data[4] - offsets['by2']
-                    bz2 = data[5] - offsets['bz2']
-                
-                # Apply smoothing (optional)
-                    bx_buffer.append(bx)
-                    by_buffer.append(by)
-                    bz_buffer.append(bz)
-                    bx2_buffer.append(bx2)
-                    by2_buffer.append(by2)
-                    bz2_buffer.append(bz2)
-                
-                    smoothed_bx = np.mean(bx_buffer) if bx_buffer else bx
-                    smoothed_by = np.mean(by_buffer) if by_buffer else by
-                    smoothed_bz = np.mean(bz_buffer) if bz_buffer else bz
-                    smoothed_bx2 = np.mean(bx2_buffer) if bx2_buffer else bx2
-                    smoothed_by2 = np.mean(by2_buffer) if by2_buffer else by2
-                    smoothed_bz2 = np.mean(bz2_buffer) if bz2_buffer else bz2
-                
-                # Predict force
-                    Fx, Fy, Fz = predict_force(
-                        smoothed_bx, smoothed_by, smoothed_bz,
-                        smoothed_bx2, smoothed_by2, smoothed_bz2
-                    )
-                # Print results (customize as needed)
-                    print(f"\rFx: {Fx:.4f} N | Fy: {Fy:.4f} N | Fz: {Fz:.4f} N", end='', flush=True)
-                time.sleep(0.01)  # Small delay to prevent CPU overload
+    # ================ In update_control_loop function ================
+# Replace the entire force sensor section with this non-blocking version:
+
+if sensor is not None and ser is not None and ser.in_waiting > 0:
+    try:
+        line = ser.readline().decode('ascii', errors='ignore').strip()
+        data = parse_serial_line(line)
+        if data:
+            bx = data[0] - offsets['bx1']
+            by = data[1] - offsets['by1']
+            bz = data[2] - offsets['bz1']
+            bx2 = data[3] - offsets['bx2']
+            by2 = data[4] - offsets['by2']
+            bz2 = data[5] - offsets['bz2']
             
-        except KeyboardInterrupt:
-            print("\nStopping...")
-    else:
-        # f_ext_fun = lambda t: [0, 0, -0.066]
+            # Apply smoothing
+            bx_buffer.append(bx)
+            by_buffer.append(by)
+            bz_buffer.append(bz)
+            bx2_buffer.append(bx2)
+            by2_buffer.append(by2)
+            bz2_buffer.append(bz2)
+            
+            smoothed_bx = np.mean(bx_buffer) if bx_buffer else bx
+            smoothed_by = np.mean(by_buffer) if by_buffer else by
+            smoothed_bz = np.mean(bz_buffer) if bz_buffer else bz
+            smoothed_bx2 = np.mean(bx2_buffer) if bx2_buffer else bx2
+            smoothed_by2 = np.mean(by2_buffer) if by2_buffer else by2
+            smoothed_bz2 = np.mean(bz2_buffer) if bz2_buffer else bz2
+            
+            # Predict force
+            Fx, Fy, Fz = predict_force(
+                smoothed_bx, smoothed_by, smoothed_bz,
+                smoothed_bx2, smoothed_by2, smoothed_bz2
+            )
+            # Create force function
+            f_ext_fun = lambda t: [Fx, Fy, Fz]
+    except Exception as e:
+        print(f"Force sensor error: {e}")
         f_ext_fun = lambda t: [0, 0, 0]
+else:
+    f_ext_fun = lambda t: [0, 0, 0]
 
     #=============== get q (config) ===============
     # compute q_0, config variables under no external load
@@ -521,7 +515,13 @@ def main():
     # sensor_connect = ArduinoConnect('/dev/ttyUSB0', 115200)  # Change COM6 if needed
     # sensor = ArduinoComm(sensor_connect)
     sensor = None
-
+    offsets = None
+    ser = None
+    if sensor is not None:
+        print("Calibrating force sensor...")
+        offsets = calibrate_force_sensor()
+        if offsets is not None:
+            ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.1)  # Non-blocking
     # --------------Call and define CC kinematics class---------------
     kin = Kinematics()
     kin2  = RPPR_Kinematics()
@@ -688,8 +688,8 @@ def main():
 
             sensor = 1
             # Get current position and other data
-            (pcc_coords, rigid_coords, q_next, q_ref, q_a_est, q_u_est, 
-            delta_u, vols, pressures, u_target, pred_tip) = update_control_loop( t_tip_mm, R_tip_b, kin, pathCoords, base_height, arduino, sensor, dt)
+            (pcc_coords, rigid_coords, q_next, q_ref, q_a_est, q_u_est, delta_u, vols, pressures, u_target, pred_tip) = update_control_loop(
+             t_tip_mm, R_tip_b, kin, pathCoords, base_height, arduino, sensor, dt, ser, offsets)
 
             draw_pose(params, frames, R_tip_0, t_tip_0, T_b0, rigid_coords)
 
