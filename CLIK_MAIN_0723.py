@@ -49,6 +49,77 @@ goal_prev = np.zeros(3)
 # UPPER_COLOR = np.array([10, 255, 255]) # Red HSV upper
 # COLOR_RANGE = (LOWER_COLOR, UPPER_COLOR)
 
+import numpy as np
+import time
+from collections import defaultdict
+
+def calibrate_force_sensor(sample_delay=0.01, serial_port='/dev/ttyUSB0', baud_rate=115200):
+    """
+    Collects 100 samples from serial-connected force sensor and returns average offsets.
+    
+    Args:
+        sample_delay (float): Delay between samples in seconds (default: 0.01s)
+        serial_port (str): Serial port address (default: '/dev/ttyUSB0')
+        baud_rate (int): Baud rate (default: 115200)
+    
+    Returns:
+        dict: {'bx1': offset, 'by1': offset, 'bz1': offset,
+               'bx2': offset, 'by2': offset, 'bz2': offset}
+    """
+    import serial  # Local import to avoid dependency if not using serial
+    
+    print("Starting calibration - keep sensor at rest...")
+    print("Collecting 100 samples", end='', flush=True)
+    
+    # Initialize data storage
+    samples = defaultdict(list)
+    ser = None
+    
+    try:
+        # Initialize serial connection
+        ser = serial.Serial(serial_port, baud_rate, timeout=1)
+        time.sleep(2)  # Allow time for connection
+        
+        # Collect samples
+        for i in range(100):
+            try:
+                line = ser.readline().decode('ascii', errors='ignore').strip()
+                values = list(map(float, line.split(',')))
+                
+                if len(values) == 6:  # Expecting bx1,by1,bz1,bx2,by2,bz2
+                    samples['bx1'].append(values[0])
+                    samples['by1'].append(values[1])
+                    samples['bz1'].append(values[2])
+                    samples['bx2'].append(values[3])
+                    samples['by2'].append(values[4])
+                    samples['bz2'].append(values[5])
+                    
+                    if (i+1) % 10 == 0:
+                        print('.', end='', flush=True)
+                
+                time.sleep(sample_delay)
+                    
+            except (ValueError, IndexError):
+                continue  # Skip bad readings
+        
+        # Calculate offsets
+        offsets = {k: np.mean(v) for k, v in samples.items()}
+        
+        print("\nCalibration complete!")
+        print("Calculated offsets:")
+        for axis, offset in offsets.items():
+            print(f"{axis}: {offset:.4f}")
+            
+        return offsets
+        
+    except Exception as e:
+        print(f"\nCalibration failed: {str(e)}")
+        return None
+        
+    finally:
+        if ser and ser.is_open:
+            ser.close()
+
 def load_params(filename):
     data = np.load(filename)
     return data['K'], data['D'], data['R'], data['T']
