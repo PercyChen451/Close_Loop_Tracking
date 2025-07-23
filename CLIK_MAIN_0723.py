@@ -331,48 +331,64 @@ def update_control_loop(tipCoords, R_tip, kin, PathCoords, base_height, arduino,
     _, numGoals = PathCoords.shape
 
     #=============== get force ============
-    if sensor is not None:
-        try:
-            while True:
-                SERIAL_PORT = '/dev/ttyUSB0'
-                BAUD_RATE = 115200
-                TIMEOUT = 1
-                ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
-                line = ser.readline().decode('ascii', errors='ignore')
-                data = parse_serial_line(line)
-                #print("ForceSensor Active")
-                if data:
-                    bx, by, bz, bx2, by2, bz2 = data
+if sensor is not None:
+    try:
+        # First run calibration to get offsets
+        offsets = calibrate_force_sensor()
+        if not offsets:
+            print("Warning: Using default offsets (0)")
+            offsets = {'bx1': 0, 'by1': 0, 'bz1': 0, 'bx2': 0, 'by2': 0, 'bz2': 0}
+
+        while True:
+            SERIAL_PORT = '/dev/ttyUSB0'
+            BAUD_RATE = 115200
+            TIMEOUT = 1
+            ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
+            line = ser.readline().decode('ascii', errors='ignore')
+            data = parse_serial_line(line)
+            
+            if data:
+                # Apply offsets to raw readings
+                bx = data[0] - offsets['bx1']
+                by = data[1] - offsets['by1']
+                bz = data[2] - offsets['bz1']
+                bx2 = data[3] - offsets['bx2']
+                by2 = data[4] - offsets['by2']
+                bz2 = data[5] - offsets['bz2']
                 
                 # Apply smoothing (optional)
-                    bx_buffer.append(bx)
-                    by_buffer.append(by)
-                    bz_buffer.append(bz)
-                    bx2_buffer.append(bx2)
-                    by2_buffer.append(by2)
-                    bz2_buffer.append(bz2)
+                bx_buffer.append(bx)
+                by_buffer.append(by)
+                bz_buffer.append(bz)
+                bx2_buffer.append(bx2)
+                by2_buffer.append(by2)
+                bz2_buffer.append(bz2)
                 
-                    smoothed_bx = np.mean(bx_buffer) if bx_buffer else bx
-                    smoothed_by = np.mean(by_buffer) if by_buffer else by
-                    smoothed_bz = np.mean(bz_buffer) if bz_buffer else bz
-                    smoothed_bx2 = np.mean(bx2_buffer) if bx2_buffer else bx2
-                    smoothed_by2 = np.mean(by2_buffer) if by2_buffer else by2
-                    smoothed_bz2 = np.mean(bz2_buffer) if bz2_buffer else bz2
+                smoothed_bx = np.mean(bx_buffer) if bx_buffer else bx
+                smoothed_by = np.mean(by_buffer) if by_buffer else by
+                smoothed_bz = np.mean(bz_buffer) if bz_buffer else bz
+                smoothed_bx2 = np.mean(bx2_buffer) if bx2_buffer else bx2
+                smoothed_by2 = np.mean(by2_buffer) if by2_buffer else by2
+                smoothed_bz2 = np.mean(bz2_buffer) if bz2_buffer else bz2
                 
-                # Predict force
-                    Fx, Fy, Fz = predict_force(
-                        smoothed_bx, smoothed_by, smoothed_bz,
-                        smoothed_bx2, smoothed_by2, smoothed_bz2
-                    )
-                # Print results (customize as needed)
-                    print(f"\rFx: {Fx:.4f} N | Fy: {Fy:.4f} N | Fz: {Fz:.4f} N", end='', flush=True)
-                time.sleep(0.01)  # Small delay to prevent CPU overload
+                # Predict force using zero-adjusted values
+                Fx, Fy, Fz = predict_force(
+                    smoothed_bx, smoothed_by, smoothed_bz,
+                    smoothed_bx2, smoothed_by2, smoothed_bz2
+                )
+                
+                # Print results
+                print(f"\rFx: {Fx:.4f} N | Fy: {Fy:.4f} N | Fz: {Fz:.4f} N", end='', flush=True)
             
-        except KeyboardInterrupt:
-            print("\nStopping...")
-    else:
-        # f_ext_fun = lambda t: [0, 0, -0.066]
-        f_ext_fun = lambda t: [0, 0, 0]
+            time.sleep(0.01)  # Small delay to prevent CPU overload
+        
+    except KeyboardInterrupt:
+        print("\nStopping...")
+    finally:
+        if 'ser' in locals() and ser.is_open:
+            ser.close()
+else:
+    f_ext_fun = lambda t: [0, 0, 0]
 
     #=============== get q (config) ===============
     # compute q_0, config variables under no external load
