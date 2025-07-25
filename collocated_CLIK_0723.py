@@ -131,17 +131,18 @@ Traceback of TorchScript, serialized code (most recent call last):
     return torch.linear(x, weight, bias)
            ~~~~~~~~~~~~ <--- HERE
 
-Traceback of TorchScript, original code (most recent call last):
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/linear.py(125): forward
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1741): _slow_forward
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1762): _call_impl
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1751): _wrapped_call_impl
-/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py(100): forward
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1741): _slow_forward
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1762): _call_impl
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1751): _wrapped_call_impl
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/jit/_trace.py(1279): trace_module
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/jit/_trace.py(696): _trace_impl
-/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/jit/_trace.py(1002): trace
-/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py(222): <module>
-RuntimeError: mat1 and mat2 must have the same dtype, but got Double and Float
+Starting calibration...
+Calibration error: could not convert string to float: 'Initializing MLX90394 sensors...'
+[0 0 0] -7.152557373046875e-07
+[0 0 0] -0.010319948196411133
+[0 0 0] -0.01023554801940918
+[0 0 0] -0.010106563568115234
+[0 0 0] -0.010120153427124023
+[0 0 0] -0.010112285614013672
+[0 0 0] -0.010100603103637695
+[0 0 0] -0.010114192962646484
+[ 2.46 -1.7  15.93] -0.010184764862060547
+[ 2.46 -1.7  15.93] -0.027265071868896484
+[ 2.46 -1.7  15.93] -0.010098695755004883
+[ 2.46 -1.7  15.93] -0.010284900665283203
+[ 2.46 -1.7  15.95] -0.010128259658813477
