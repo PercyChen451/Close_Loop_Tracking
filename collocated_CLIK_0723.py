@@ -110,3 +110,38 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+Calibration error: could not convert string to float: 'Initializing MLX90394 sensors...'
+Calibrating force sensor...
+Starting calibration...
+Calibration error: The following operation failed in the TorchScript interpreter.
+Traceback of TorchScript, serialized code (most recent call last):
+  File "code/__torch__.py", line 18, in forward
+    relu1 = self.relu1
+    fc1 = self.fc1
+    _0 = (relu1).forward((fc1).forward(x, ), )
+                          ~~~~~~~~~~~~ <--- HERE
+    _1 = (relu2).forward((fc2).forward(_0, ), )
+    return (fc3).forward(_1, )
+  File "code/__torch__/torch/nn/modules/linear.py", line 12, in forward
+    bias = self.bias
+    weight = self.weight
+    return torch.linear(x, weight, bias)
+           ~~~~~~~~~~~~ <--- HERE
+
+Traceback of TorchScript, original code (most recent call last):
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/linear.py(125): forward
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1741): _slow_forward
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1762): _call_impl
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1751): _wrapped_call_impl
+/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py(100): forward
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1741): _slow_forward
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1762): _call_impl
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/nn/modules/module.py(1751): _wrapped_call_impl
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/jit/_trace.py(1279): trace_module
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/jit/_trace.py(696): _trace_impl
+/home/cardio/Documents/opencv/venv/lib/python3.12/site-packages/torch/jit/_trace.py(1002): trace
+/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py(222): <module>
+RuntimeError: mat1 and mat2 must have the same dtype, but got Double and Float
