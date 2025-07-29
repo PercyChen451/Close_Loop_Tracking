@@ -1,3 +1,55 @@
+(venv) cardio@cardio-PC:~/Documents/camera_tracking$ /home/cardio/Documents/Haptics-main/venv/bin/python /home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py
+Shift 4
+Epoch 100/2000, Train Loss: 0.020754, Val Loss: 0.030244
+Epoch 200/2000, Train Loss: 0.011749, Val Loss: 0.027273
+Epoch 300/2000, Train Loss: 0.009437, Val Loss: 0.025518
+Epoch 400/2000, Train Loss: 0.007617, Val Loss: 0.024409
+Epoch 500/2000, Train Loss: 0.006758, Val Loss: 0.023918
+Epoch 600/2000, Train Loss: 0.006193, Val Loss: 0.022727
+Epoch 700/2000, Train Loss: 0.005392, Val Loss: 0.022453
+Epoch 800/2000, Train Loss: 0.005119, Val Loss: 0.022449
+Epoch 900/2000, Train Loss: 0.004242, Val Loss: 0.022641
+Epoch 1000/2000, Train Loss: 0.005093, Val Loss: 0.023956
+Epoch 1100/2000, Train Loss: 0.004417, Val Loss: 0.022085
+Epoch 1200/2000, Train Loss: 0.003554, Val Loss: 0.022205
+Epoch 1300/2000, Train Loss: 0.004082, Val Loss: 0.022386
+Epoch 1400/2000, Train Loss: 0.003397, Val Loss: 0.021401
+Epoch 1500/2000, Train Loss: 0.003717, Val Loss: 0.022489
+Epoch 1600/2000, Train Loss: 0.003583, Val Loss: 0.022494
+Epoch 1700/2000, Train Loss: 0.003308, Val Loss: 0.022253
+Epoch 1800/2000, Train Loss: 0.003134, Val Loss: 0.023039
+Epoch 1900/2000, Train Loss: 0.003128, Val Loss: 0.021332
+Epoch 2000/2000, Train Loss: 0.003710, Val Loss: 0.022249
+Traceback (most recent call last):
+  File "/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py", line 211, in <module>
+    SS_res = np.sum((Y_true_for_plot - Y_pred)**2, axis=0)
+                     ~~~~~~~~~~~~~~~~^~~~~~~~
+ValueError: operands could not be broadcast together with shapes (8088,3) (8091,3) 
+(venv) cardio@cardio-PC:~/Documents/camera_tracking$ /home/cardio/Documents/Haptics-main/venv/bin/python /home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py
+Shift 4
+Traceback (most recent call last):
+  File "/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py", line 123, in <module>
+    outputs = model(inputs)
+              ^^^^^^^^^^^^^
+  File "/home/cardio/Documents/Haptics-main/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cardio/Documents/Haptics-main/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py", line 101, in forward
+    x = self.fc1(x)
+        ^^^^^^^^^^^
+  File "/home/cardio/Documents/Haptics-main/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cardio/Documents/Haptics-main/venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/cardio/Documents/Haptics-main/venv/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: mat1 and mat2 shapes cannot be multiplied (32x12 and 6x128)
 import numpy as np
 import pandas as pd
 import torch
