@@ -51,9 +51,28 @@ by2 = by2[shift_i:]
 bz2 = bz2[shift_i:]
 time = time[:-shift_i]
 
-# Prepare input and output data - ORIGINAL WORKING VERSION
-X = np.column_stack((bx, by, bz, bx2, by2, bz2, bx, by, bz, bx2, by2, bz2))
+# Parameters for time-lagged features
+n_lags = 3  # Number of previous timestamps to include
+n_features = 6  # bx, by, bz, bx2, by2, bz2
+
+# Create time-lagged features and properly aligned outputs
+def create_sequences(data, targets, n_lags):
+    X, Y = [], []
+    for i in range(n_lags, len(data)):
+        X.append(data[i-n_lags:i+1].flatten())  # Current + n_lags previous
+        Y.append(targets[i])  # Output corresponds to current timestep
+    return np.array(X), np.array(Y)
+
+current_input = np.column_stack((bx, by, bz, bx2, by2, bz2))
 Y = np.column_stack((fx, fy, fz))
+
+# Verify lengths match before creating sequences
+assert len(current_input) == len(Y), "Input and output lengths don't match"
+
+X, Y_aligned = create_sequences(current_input, Y, n_lags)
+
+# Verify we have matching lengths after sequence creation
+assert len(X) == len(Y_aligned), "Sequence creation resulted in mismatched lengths"
 
 # Normalize input data
 X_mean = np.mean(X, axis=0)
@@ -61,9 +80,9 @@ X_std = np.std(X, axis=0)
 X_norm = (X - X_mean) / X_std
 
 # Normalize output data
-Y_mean = np.mean(Y, axis=0)
-Y_std = np.std(Y, axis=0)
-Y_norm = (Y - Y_mean) / Y_std
+Y_mean = np.mean(Y_aligned, axis=0)
+Y_std = np.std(Y_aligned, axis=0)
+Y_norm = (Y_aligned - Y_mean) / Y_std
 
 # Split data into training, validation, and test sets
 X_train, X_temp, Y_train, Y_temp = train_test_split(X_norm, Y_norm, test_size=0.3, random_state=42)
@@ -87,11 +106,13 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size)
 test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
-# Define the neural network architecture - ORIGINAL WORKING VERSION
+# Define the neural network architecture
+input_size = (n_lags + 1) * n_features  # (3 lags + current) * 6 features
+
 class NeuralNetwork(nn.Module):
-    def __init__(self):
+    def __init__(self, input_size):
         super(NeuralNetwork, self).__init__()
-        self.fc1 = nn.Linear(12, 128)  # Input size matches your original working version (12 features)
+        self.fc1 = nn.Linear(input_size, 128)
         self.relu1 = nn.ReLU()
         self.fc2 = nn.Linear(128, 128)
         self.relu2 = nn.ReLU()
@@ -105,7 +126,7 @@ class NeuralNetwork(nn.Module):
         x = self.fc3(x)
         return x
 
-model = NeuralNetwork()
+model = NeuralNetwork(input_size)
 
 # Training settings
 criterion = nn.MSELoss()
@@ -148,7 +169,8 @@ np.save('normalization_params.npy', {
     'mean': X_mean,
     'std': X_std,
     'Y_mean': Y_mean,
-    'Y_std': Y_std
+    'Y_std': Y_std,
+    'n_lags': n_lags
 })
 
 # Plot training and validation loss
@@ -167,10 +189,16 @@ with torch.no_grad():
     Y_pred_norm = model(torch.FloatTensor(X_norm)).numpy()
     Y_pred = (Y_pred_norm * Y_std) + Y_mean
 
+# The predictions are already aligned with Y_aligned
+Y_true_for_plot = Y_aligned
+
+# Final verification
+assert Y_true_for_plot.shape == Y_pred.shape, f"Final shape mismatch: {Y_true_for_plot.shape} vs {Y_pred.shape}"
+
 # Plot predicted vs actual
 fig = plt.figure()
 ax = fig.add_subplot(111, projection='3d')
-ax.scatter(Y[:, 0], Y[:, 1], Y[:, 2], c='b', marker='o', label='True Force')
+ax.scatter(Y_true_for_plot[:, 0], Y_true_for_plot[:, 1], Y_true_for_plot[:, 2], c='b', marker='o', label='True Force')
 ax.scatter(Y_pred[:, 0], Y_pred[:, 1], Y_pred[:, 2], c='r', marker='x', label='Predicted Force')
 ax.set_xlabel('Fx')
 ax.set_ylabel('Fy')
@@ -179,18 +207,18 @@ ax.legend()
 plt.title('True vs Predicted Forces')
 plt.show()
 
-# Compute R² and RMSE
-SS_res = np.sum((Y - Y_pred)**2, axis=0)
-SS_tot = np.sum((Y - np.mean(Y, axis=0))**2, axis=0)
+# Compute metrics
+SS_res = np.sum((Y_true_for_plot - Y_pred)**2, axis=0)
+SS_tot = np.sum((Y_true_for_plot - np.mean(Y_true_for_plot, axis=0))**2, axis=0)
 R2 = 1 - (SS_res / SS_tot)
 print('R² for [Fx, Fy, Fz]:')
 print(R2)
 
-errors = Y - Y_pred
+errors = Y_true_for_plot - Y_pred
 rmse = np.sqrt(np.mean(errors**2, axis=0))
 print('RMSE for [Fx, Fy, Fz]:')
 print(rmse)
 
 # Save model
-traced_model = torch.jit.trace(model, torch.randn(1, 12))  # Input shape matches original (1, 12)
+traced_model = torch.jit.trace(model, torch.randn(1, input_size))
 traced_model.save('force_calibration_model_optimized.pt')
