@@ -1,3 +1,9 @@
+Epoch 2000/2000, Train Loss: 0.002993, Val Loss: 0.022382
+Traceback (most recent call last):
+  File "/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/NNtraining.py", line 188, in <module>
+    assert Y_true_for_plot.shape == Y_pred.shape, f"Shape mismatch: {Y_true_for_plot.shape} vs {Y_pred.shape}"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Shape mismatch: (8088, 3) vs (8091, 3)
 import numpy as np
 import pandas as pd
 import torch
