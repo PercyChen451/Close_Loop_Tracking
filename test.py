@@ -1,27 +1,3 @@
-(venv) cardio@cardio-PC:~/Documents/camera_tracking$ /home/cardio/Documents/camera_tracking/venv/bin/python /home/cardio/Documents/Force_sensor/Force_Sensor_Cali/RealTimeWithMCU.py
-Connected to /dev/ttyUSB0, waiting for data...
-Starting calibration - keep sensor at rest...
-Collecting 100 samples..........
-Calibration complete!
-Calculated offsets:
-bx1: -103.7320
-by1: -1019.4742
-bz1: -7457.3093
-bx2: -980.2577
-by2: -172.6082
-bz2: -8689.3402
-N
-Traceback (most recent call last):
-  File "/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/RealTimeWithMCU.py", line 164, in <module>
-    main()
-  File "/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/RealTimeWithMCU.py", line 148, in main
-    Fx, Fy, Fz = predict_force(
-                 ^^^^^^^^^^^^^^
-  File "/home/cardio/Documents/Force_sensor/Force_Sensor_Cali/RealTimeWithMCU.py", line 104, in predict_force
-    X_norm = (X_new - X_mean) / X_std
-              ~~~~~~^~~~~~~~
-ValueError: operands could not be broadcast together with shapes (1,6) (24,) 
-
 import numpy as np
 import torch
 import serial
@@ -35,6 +11,7 @@ X_mean = norm_params['mean'].astype(np.float32)
 X_std = norm_params['std'].astype(np.float32)
 Y_mean = norm_params.get('Y_mean', 0).astype(np.float32)
 Y_std = norm_params.get('Y_std', 1).astype(np.float32)
+n_lags = norm_params.get('n_lags', 3)  # Get number of lags used during training
 
 model = torch.jit.load('force_calibration_model_optimized.pt')
 model.eval()
@@ -44,8 +21,19 @@ SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
 TIMEOUT = 1
 
-# Data smoothing (optional)
+# Data smoothing and history buffer
 SMOOTHING_WINDOW = 5
+HISTORY_BUFFER_SIZE = n_lags + 1  # Need to store current + n_lags previous samples
+
+# Initialize buffers
+bx_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+by_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+bz_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+bx2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+by2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+bz2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+
+# Smoothing buffers
 bx_buffer = deque(maxlen=SMOOTHING_WINDOW)
 by_buffer = deque(maxlen=SMOOTHING_WINDOW)
 bz_buffer = deque(maxlen=SMOOTHING_WINDOW)
@@ -53,11 +41,8 @@ bx2_buffer = deque(maxlen=SMOOTHING_WINDOW)
 by2_buffer = deque(maxlen=SMOOTHING_WINDOW)
 bz2_buffer = deque(maxlen=SMOOTHING_WINDOW)
 
-
 def calibrate_force_sensor(sample_delay=0.01, serial_port='/dev/ttyUSB0', baud_rate=115200):
-    """
-    Collects 100 samples from serial-connected force sensor and returns average offsets.
-    """
+    """Collects 100 samples from serial-connected force sensor and returns average offsets."""
     import serial  # Local import to avoid dependency if not using serial
     
     print("Starting calibration - keep sensor at rest...")
@@ -123,8 +108,28 @@ def parse_serial_line(line):
     return None
 
 def predict_force(bx, by, bz, bx2, by2, bz2):
-    """Normalize inputs and predict force"""
-    X_new = np.array([[bx, by, bz, bx2, by2, bz2]], dtype=np.float32)
+    """Normalize inputs and predict force using time-lagged features"""
+    # Add current sample to history buffers
+    bx_history.append(bx)
+    by_history.append(by)
+    bz_history.append(bz)
+    bx2_history.append(bx2)
+    by2_history.append(by2)
+    bz2_history.append(bz2)
+    
+    # Only predict when we have enough history
+    if len(bx_history) < HISTORY_BUFFER_SIZE:
+        return np.zeros(3)  # Return zeros until we have enough data
+    
+    # Create feature vector with current + lagged samples
+    features = []
+    for i in range(HISTORY_BUFFER_SIZE):
+        features.extend([
+            bx_history[i], by_history[i], bz_history[i],
+            bx2_history[i], by2_history[i], bz2_history[i]
+        ])
+    
+    X_new = np.array([features], dtype=np.float32)
     X_norm = (X_new - X_mean) / X_std
     
     with torch.no_grad():
@@ -137,21 +142,24 @@ def main():
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
     print(f"Connected to {SERIAL_PORT}, waiting for data...")
     
-
     offsets = calibrate_force_sensor()
+    if offsets is None:
+        print("Failed to calibrate, exiting...")
+        return
+    
     try:
         while True:
             line = ser.readline().decode('ascii', errors='ignore')
             data = parse_serial_line(line)
-            if ser is not None:
+            
+            if data is not None:
+                # Apply offsets
                 bx = data[0] - offsets['bx1']
                 by = data[1] - offsets['by1']
                 bz = data[2] - offsets['bz1']
                 bx2 = data[3] - offsets['bx2']
                 by2 = data[4] - offsets['by2']
                 bz2 = data[5] - offsets['bz2']
-                print("N")
-                bx, by, bz, bx2, by2, bz2 = data
                 
                 # Apply smoothing (optional)
                 bx_buffer.append(bx)
@@ -174,7 +182,7 @@ def main():
                     smoothed_bx2, smoothed_by2, smoothed_bz2
                 )
                 
-                # Print results (customize as needed)
+                # Print results
                 print(f"\rFx: {Fx:.4f} N | Fy: {Fy:.4f} N | Fz: {Fz:.4f} N", end='', flush=True)
                 
             time.sleep(0.01)  # Small delay to prevent CPU overload
