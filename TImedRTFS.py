@@ -15,7 +15,7 @@ n_lags = norm_params.get('n_lags', 3)  # Get number of lags used during training
 
 model = torch.jit.load('force_calibration_model_optimized.pt')
 model.eval()
-
+kf = KalmanFilter3D(process_noise=0.01, measurement_noise=0.1)
 # Serial port configuration
 SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
