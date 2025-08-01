@@ -160,21 +160,21 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size)
 test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
-# Define LSTM model
+# Define LSTM model# ... (keep all the data loading and preprocessing code the same until model definition)
+
 class ForceLSTM(nn.Module):
     def __init__(self, input_size, hidden_size=128, num_layers=3):
         super(ForceLSTM, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         
-        # LSTM layer with batch normalization between layers
+        # LSTM layer
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            dropout=0.3,  # Increased dropout for regularization
-            bidirectional=False
+            dropout=0.3 if num_layers > 1 else 0
         )
         
         # LayerNorm for LSTM output
@@ -188,12 +188,12 @@ class ForceLSTM(nn.Module):
             nn.Softmax(dim=1)
         )
         
-        # Fully connected layers with skip connections
+        # Fully connected layers with proper dimension handling
         self.fc1 = nn.Linear(hidden_size, hidden_size)
         self.bn1 = nn.BatchNorm1d(hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size//2)
-        self.bn2 = nn.BatchNorm1d(hidden_size//2)
-        self.fc3 = nn.Linear(hidden_size//2, 3)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)  # Keep same size for skip connection
+        self.bn2 = nn.BatchNorm1d(hidden_size)
+        self.fc3 = nn.Linear(hidden_size, 3)
         
         # Activation and dropout
         self.relu = nn.ReLU()
@@ -214,23 +214,24 @@ class ForceLSTM(nn.Module):
         attention_weights = self.attention(lstm_out)
         context_vector = torch.sum(attention_weights * lstm_out, dim=1)
         
-        # FC layers with skip connections
+        # FC layers with skip connection
         out = self.fc1(context_vector)
         out = self.bn1(out)
         out = self.relu(out)
         out = self.dropout(out)
         
+        # Skip connection - now dimensions match
         residual = out
         out = self.fc2(out)
         out = self.bn2(out)
-        out = self.relu(out + residual[:out.size(0)])  # Skip connection
+        out = self.relu(out + residual)  # Proper skip connection
         out = self.dropout(out)
         
         out = self.fc3(out)
         
         return out
 
-# Initialize model with larger capacity
+# Initialize model
 model = ForceLSTM(input_size=n_features, hidden_size=128, num_layers=3)
 
 # Enhanced training settings
@@ -241,7 +242,6 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(
     mode='min',
     factor=0.5,
     patience=30,
-    verbose=True,
     min_lr=1e-6
 )
 
@@ -303,6 +303,7 @@ for epoch in range(epochs):
 
 # Load best model
 model.load_state_dict(torch.load('best_lstm_model.pth'))
+
 # Save normalization parameters
 np.save('normalization_params_lstm.npy', {
     'mean': X_mean,
@@ -362,3 +363,4 @@ print(rmse)
 # Save model
 traced_model = torch.jit.trace(model, torch.randn(1, n_lags+1, n_features))
 traced_model.save('force_calibration_lstm_model.pt')
+
