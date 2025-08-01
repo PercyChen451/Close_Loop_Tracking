@@ -1,5 +1,3 @@
-RuntimeError: The size of tensor a (64) must match the size of tensor b (128) at non-singleton dimension 1
-TypeError: ReduceLROnPlateau.__init__() got an unexpected keyword argument 'verbose'
 import numpy as np
 import pandas as pd
 import torch
@@ -8,6 +6,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+
 
 # Load data from file
 file = 'percy81.csv'
@@ -39,7 +38,7 @@ bx2 = bx2 - bx2[0]
 by2 = by2 - by2[0]
 bz2 = bz2 - bz2[0]
 
-shift_i = 4
+shift_i = 2
 print("Shift", shift_i)
 fx = fx[:-shift_i]
 fy = fy[:-shift_i]
@@ -363,4 +362,3 @@ print(rmse)
 # Save model
 traced_model = torch.jit.trace(model, torch.randn(1, n_lags+1, n_features))
 traced_model.save('force_calibration_lstm_model.pt')
-
