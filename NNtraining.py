@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 # Load data from file
-file = 'PercyFS729.csv'
+file = 'percy1_7-21.csv'
 data = pd.read_csv(file)
 
 # Extract data columns
@@ -38,7 +38,7 @@ bx2 = bx2 - bx2[0]
 by2 = by2 - by2[0]
 bz2 = bz2 - bz2[0]
 
-shift_i = 4
+shift_i = 6
 print("Shift", shift_i)
 fx = fx[:-shift_i]
 fy = fy[:-shift_i]
@@ -112,11 +112,13 @@ input_size = (n_lags + 1) * n_features  # (3 lags + current) * 6 features
 class NeuralNetwork(nn.Module):
     def __init__(self, input_size):
         super(NeuralNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_size, 128)
+        self.fc1 = nn.Linear(input_size, 64)
         self.relu1 = nn.ReLU()
-        self.fc2 = nn.Linear(128, 128)
+        self.fc2 = nn.Linear(64, 64)
         self.relu2 = nn.ReLU()
-        self.fc3 = nn.Linear(128, 3)
+        self.fc3 = nn.Linear(64, 64)
+        self.relu3 = nn.ReLU()
+        self.fc4 = nn.Linear(64, 3)
         
     def forward(self, x):
         x = self.fc1(x)
@@ -124,6 +126,8 @@ class NeuralNetwork(nn.Module):
         x = self.fc2(x)
         x = self.relu2(x)
         x = self.fc3(x)
+        x = self.relu3(x)
+        x = self.fc4(x)
         return x
 
 model = NeuralNetwork(input_size)
