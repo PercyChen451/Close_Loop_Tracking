@@ -1,196 +1,364 @@
+RuntimeError: The size of tensor a (64) must match the size of tensor b (128) at non-singleton dimension 1
+TypeError: ReduceLROnPlateau.__init__() got an unexpected keyword argument 'verbose'
 import numpy as np
+import pandas as pd
 import torch
-import serial
-import time
-from collections import deque
-from collections import defaultdict
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
-# Load normalization and model
-norm_params = np.load('normalization_params.npy', allow_pickle=True).item()
-X_mean = norm_params['mean'].astype(np.float32)
-X_std = norm_params['std'].astype(np.float32)
-Y_mean = norm_params.get('Y_mean', 0).astype(np.float32)
-Y_std = norm_params.get('Y_std', 1).astype(np.float32)
-n_lags = norm_params.get('n_lags', 3)  # Get number of lags used during training
+# Load data from file
+file = 'percy81.csv'
+data = pd.read_csv(file)
 
-model = torch.jit.load('force_calibration_model_optimized.pt')
-model.eval()
+# Extract data columns
+time = data['Time'].values
+fx = data['Fx'].values
+fy = data['Fy'].values
+fz = data['Fz'].values
+tx = data['Tx'].values
+ty = data['Ty'].values
+tz = data['Tz'].values
+bx = data['Bx1'].values
+by = data['By1'].values
+bz = data['Bz1'].values
+bx2 = data['Bx2'].values
+by2 = data['By2'].values
+bz2 = data['Bz2'].values
 
-# Serial port configuration
-SERIAL_PORT = '/dev/ttyUSB0'
-BAUD_RATE = 115200
-TIMEOUT = 1
+# Zero data
+fx = fx - fx[0]
+fy = fy - fy[0]
+fz = fz - fz[0]
+bx = bx - bx[0]
+by = by - by[0]
+bz = bz - bz[0]
+bx2 = bx2 - bx2[0]
+by2 = by2 - by2[0]
+bz2 = bz2 - bz2[0]
 
-# Data smoothing and history buffer
-SMOOTHING_WINDOW = 5
-HISTORY_BUFFER_SIZE = n_lags + 1  # Need to store current + n_lags previous samples
+shift_i = 4
+print("Shift", shift_i)
+fx = fx[:-shift_i]
+fy = fy[:-shift_i]
+fz = fz[:-shift_i]
+bx = bx[shift_i:]
+by = by[shift_i:]
+bz = bz[shift_i:]
+bx2 = bx2[shift_i:]
+by2 = by2[shift_i:]
+bz2 = bz2[shift_i:]
+time = time[:-shift_i]
 
-# Initialize buffers
-bx_history = deque(maxlen=HISTORY_BUFFER_SIZE)
-by_history = deque(maxlen=HISTORY_BUFFER_SIZE)
-bz_history = deque(maxlen=HISTORY_BUFFER_SIZE)
-bx2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
-by2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
-bz2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+# Parameters for time-lagged features
+n_lags = 3  # Number of previous timestamps to include
+n_features = 6  # bx, by, bz, bx2, by2, bz2
 
-# Smoothing buffers
-bx_buffer = deque(maxlen=SMOOTHING_WINDOW)
-by_buffer = deque(maxlen=SMOOTHING_WINDOW)
-bz_buffer = deque(maxlen=SMOOTHING_WINDOW)
-bx2_buffer = deque(maxlen=SMOOTHING_WINDOW)
-by2_buffer = deque(maxlen=SMOOTHING_WINDOW)
-bz2_buffer = deque(maxlen=SMOOTHING_WINDOW)
+# Create sequences for LSTM (3D input: [samples, timesteps, features])
+def create_sequences(data, targets, n_lags):
+    X, Y = [], []
+    for i in range(n_lags, len(data)):
+        # Reshape to [n_lags+1, n_features] for LSTM
+        X.append(data[i-n_lags:i+1].reshape(-1, n_features))
+        Y.append(targets[i])  # Output corresponds to current timestep
+    return np.array(X), np.array(Y)
 
-def calibrate_force_sensor(sample_delay=0.01, serial_port='/dev/ttyUSB0', baud_rate=115200):
-    """Collects 100 samples from serial-connected force sensor and returns average offsets."""
-    import serial  # Local import to avoid dependency if not using serial
+current_input = np.column_stack((bx, by, bz, bx2, by2, bz2))
+Y = np.column_stack((fx, fy, fz))
+
+# Verify lengths match before creating sequences
+assert len(current_input) == len(Y), "Input and output lengths don't match"
+
+X, Y_aligned = create_sequences(current_input, Y, n_lags)
+
+# Verify we have matching lengths after sequence creation
+assert len(X) == len(Y_aligned), "Sequence creation resulted in mismatched lengths"
+
+# Normalize input data
+X_mean = np.mean(X, axis=(0,1))  # Mean across samples and timesteps
+X_std = np.std(X, axis=(0,1))    # Std across samples and timesteps
+X_norm = (X - X_mean) / X_std
+
+# Normalize output data
+Y_mean = np.mean(Y_aligned, axis=0)
+Y_std = np.std(Y_aligned, axis=0)
+Y_norm = (Y_aligned - Y_mean) / Y_std
+
+# Split data into continuous segments for validation
+def continuous_train_test_split(X, Y, test_size=0.2, val_segments=3, val_segment_size=0.05):
+    """
+    Split data into training, validation, and test sets with continuous segments
     
-    print("Starting calibration - keep sensor at rest...")
-    print("Collecting 100 samples", end='', flush=True)
+    Parameters:
+    - test_size: fraction of data for test set (taken from end)
+    - val_segments: number of validation segments
+    - val_segment_size: size of each validation segment as fraction of training data
+    """
+    n_samples = len(X)
+    test_split = int(n_samples * (1 - test_size))
     
-    # Initialize data storage
-    samples = defaultdict(list)
-    ser = None
+    # Test set is last 20%
+    X_test = X[test_split:]
+    Y_test = Y[test_split:]
     
-    try:
-        # Initialize serial connection
-        ser = serial.Serial(serial_port, baud_rate, timeout=1)
-        time.sleep(2)  # Allow time for connection
+    # Training data is everything before test split
+    X_train_full = X[:test_split]
+    Y_train_full = Y[:test_split]
+    
+    # Create validation segments
+    val_indices = []
+    segment_length = int(len(X_train_full) * val_segment_size)
+    
+    # Randomly select starting points for validation segments
+    rng = np.random.RandomState(42)
+    possible_starts = np.arange(0, len(X_train_full) - segment_length)
+    val_starts = rng.choice(possible_starts, size=val_segments, replace=False)
+    
+    # Extract validation segments
+    X_val, Y_val = [], []
+    for start in sorted(val_starts):
+        end = start + segment_length
+        X_val.append(X_train_full[start:end])
+        Y_val.append(Y_train_full[start:end])
+    
+    X_val = np.concatenate(X_val)
+    Y_val = np.concatenate(Y_val)
+    
+    # Remove validation segments from training data
+    train_mask = np.ones(len(X_train_full), dtype=bool)
+    for start in sorted(val_starts):
+        end = start + segment_length
+        train_mask[start:end] = False
+    
+    X_train = X_train_full[train_mask]
+    Y_train = Y_train_full[train_mask]
+    
+    return X_train, X_val, X_test, Y_train, Y_val, Y_test
+
+# Split data using continuous segments
+X_train, X_val, X_test, Y_train, Y_val, Y_test = continuous_train_test_split(
+    X_norm, Y_norm, test_size=0.2, val_segments=3, val_segment_size=0.05
+)
+
+# Convert to PyTorch tensors
+X_train_tensor = torch.FloatTensor(X_train)
+Y_train_tensor = torch.FloatTensor(Y_train)
+X_val_tensor = torch.FloatTensor(X_val)
+Y_val_tensor = torch.FloatTensor(Y_val)
+X_test_tensor = torch.FloatTensor(X_test)
+Y_test_tensor = torch.FloatTensor(Y_test)
+
+# Create datasets and dataloaders
+train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
+val_dataset = TensorDataset(X_val_tensor, Y_val_tensor)
+test_dataset = TensorDataset(X_test_tensor, Y_test_tensor)
+
+batch_size = 32
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size)
+test_loader = DataLoader(test_dataset, batch_size=batch_size)
+
+# Define LSTM model
+class ForceLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size=128, num_layers=3):
+        super(ForceLSTM, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
         
-        # Collect samples
-        for i in range(100):
-            try:
-                line = ser.readline().decode('ascii', errors='ignore').strip()
-                values = list(map(float, line.split(',')))
-                
-                if len(values) == 6:  # Expecting bx1,by1,bz1,bx2,by2,bz2
-                    samples['bx1'].append(values[0])
-                    samples['by1'].append(values[1])
-                    samples['bz1'].append(values[2])
-                    samples['bx2'].append(values[3])
-                    samples['by2'].append(values[4])
-                    samples['bz2'].append(values[5])
-                    
-                    if (i+1) % 10 == 0:
-                        print('.', end='', flush=True)
-                
-                time.sleep(sample_delay)
-                    
-            except (ValueError, IndexError):
-                continue  # Skip bad readings
+        # LSTM layer with batch normalization between layers
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=0.3,  # Increased dropout for regularization
+            bidirectional=False
+        )
         
-        # Calculate offsets
-        offsets = {k: np.mean(v) for k, v in samples.items()}
+        # LayerNorm for LSTM output
+        self.layernorm = nn.LayerNorm(hidden_size)
         
-        print("\nCalibration complete!")
-        print("Calculated offsets:")
-        for axis, offset in offsets.items():
-            print(f"{axis}: {offset:.4f}")
-            
-        return offsets
+        # Attention mechanism
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1),
+            nn.Softmax(dim=1)
+        )
         
-    except Exception as e:
-        print(f"\nCalibration failed: {str(e)}")
-        return None
+        # Fully connected layers with skip connections
+        self.fc1 = nn.Linear(hidden_size, hidden_size)
+        self.bn1 = nn.BatchNorm1d(hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size//2)
+        self.bn2 = nn.BatchNorm1d(hidden_size//2)
+        self.fc3 = nn.Linear(hidden_size//2, 3)
         
-    finally:
-        if ser and ser.is_open:
-            ser.close()
+        # Activation and dropout
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.2)
+        
+    def forward(self, x):
+        # Initialize hidden state and cell state
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+        
+        # Forward propagate LSTM
+        lstm_out, _ = self.lstm(x, (h0, c0))  # shape: (batch_size, seq_length, hidden_size)
+        
+        # Apply layer normalization
+        lstm_out = self.layernorm(lstm_out)
+        
+        # Attention mechanism
+        attention_weights = self.attention(lstm_out)
+        context_vector = torch.sum(attention_weights * lstm_out, dim=1)
+        
+        # FC layers with skip connections
+        out = self.fc1(context_vector)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.dropout(out)
+        
+        residual = out
+        out = self.fc2(out)
+        out = self.bn2(out)
+        out = self.relu(out + residual[:out.size(0)])  # Skip connection
+        out = self.dropout(out)
+        
+        out = self.fc3(out)
+        
+        return out
 
-def parse_serial_line(line):
-    """Parse serial line like 'bx,by,bz,bx2,by2,bz2'"""
-    try:
-        parts = list(map(float, line.strip().split(',')))
-        if len(parts) == 6:
-            return parts
-    except (ValueError, AttributeError):
-        pass
-    return None
+# Initialize model with larger capacity
+model = ForceLSTM(input_size=n_features, hidden_size=128, num_layers=3)
 
-def predict_force(bx, by, bz, bx2, by2, bz2):
-    """Normalize inputs and predict force using time-lagged features"""
-    # Add current sample to history buffers
-    bx_history.append(bx)
-    by_history.append(by)
-    bz_history.append(bz)
-    bx2_history.append(bx2)
-    by2_history.append(by2)
-    bz2_history.append(bz2)
+# Enhanced training settings
+criterion = nn.MSELoss()
+optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, 
+    mode='min',
+    factor=0.5,
+    patience=30,
+    verbose=True,
+    min_lr=1e-6
+)
+
+# Early stopping
+early_stopping_patience = 100
+best_val_loss = float('inf')
+patience_counter = 0
+
+# Training loop with gradient clipping
+max_grad_norm = 1.0
+epochs = 500
+
+train_losses = []
+val_losses = []
+
+for epoch in range(epochs):
+    model.train()
+    running_loss = 0.0
+    for inputs, targets in train_loader:
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        
+        optimizer.step()
+        running_loss += loss.item()
     
-    # Only predict when we have enough history
-    if len(bx_history) < HISTORY_BUFFER_SIZE:
-        return np.zeros(3)  # Return zeros until we have enough data
+    train_loss = running_loss / len(train_loader)
+    train_losses.append(train_loss)
     
-    # Create feature vector with current + lagged samples
-    features = []
-    for i in range(HISTORY_BUFFER_SIZE):
-        features.extend([
-            bx_history[i], by_history[i], bz_history[i],
-            bx2_history[i], by2_history[i], bz2_history[i]
-        ])
-    
-    X_new = np.array([features], dtype=np.float32)
-    X_norm = (X_new - X_mean) / X_std
-    
+    # Validation
+    model.eval()
+    val_loss = 0.0
     with torch.no_grad():
-        Y_norm = model(torch.from_numpy(X_norm)).numpy()[0]
+        for inputs, targets in val_loader:
+            outputs = model(inputs)
+            val_loss += criterion(outputs, targets).item()
     
-    return (Y_norm * Y_std) + Y_mean  # [Fx, Fy, Fz]
+    val_loss /= len(val_loader)
+    val_losses.append(val_loss)
+    scheduler.step(val_loss)
+    
+    # Early stopping check
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        patience_counter = 0
+        torch.save(model.state_dict(), 'best_lstm_model.pth')
+    else:
+        patience_counter += 1
+        if patience_counter >= early_stopping_patience:
+            print(f"\nEarly stopping at epoch {epoch+1}")
+            break
+    
+    if (epoch + 1) % 50 == 0:
+        print(f'Epoch {epoch+1}/{epochs}, Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, LR: {optimizer.param_groups[0]["lr"]:.2e}')
 
-def main():
-    # Initialize serial connection
-    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
-    print(f"Connected to {SERIAL_PORT}, waiting for data...")
-    
-    offsets = calibrate_force_sensor()
-    if offsets is None:
-        print("Failed to calibrate, exiting...")
-        return
-    
-    try:
-        while True:
-            line = ser.readline().decode('ascii', errors='ignore')
-            data = parse_serial_line(line)
-            
-            if data is not None:
-                # Apply offsets
-                bx = data[0] - offsets['bx1']
-                by = data[1] - offsets['by1']
-                bz = data[2] - offsets['bz1']
-                bx2 = data[3] - offsets['bx2']
-                by2 = data[4] - offsets['by2']
-                bz2 = data[5] - offsets['bz2']
-                
-                # Apply smoothing (optional)
-                bx_buffer.append(bx)
-                by_buffer.append(by)
-                bz_buffer.append(bz)
-                bx2_buffer.append(bx2)
-                by2_buffer.append(by2)
-                bz2_buffer.append(bz2)
-                
-                smoothed_bx = np.mean(bx_buffer) if bx_buffer else bx
-                smoothed_by = np.mean(by_buffer) if by_buffer else by
-                smoothed_bz = np.mean(bz_buffer) if bz_buffer else bz
-                smoothed_bx2 = np.mean(bx2_buffer) if bx2_buffer else bx2
-                smoothed_by2 = np.mean(by2_buffer) if by2_buffer else by2
-                smoothed_bz2 = np.mean(bz2_buffer) if bz2_buffer else bz2
-                
-                # Predict force
-                Fx, Fy, Fz = predict_force(
-                    smoothed_bx, smoothed_by, smoothed_bz,
-                    smoothed_bx2, smoothed_by2, smoothed_bz2
-                )
-                
-                # Print results
-                print(f"\rFx: {Fx:.4f} N | Fy: {Fy:.4f} N | Fz: {Fz:.4f} N", end='', flush=True)
-                
-            time.sleep(0.01)  # Small delay to prevent CPU overload
-            
-    except KeyboardInterrupt:
-        print("\nStopping...")
-    finally:
-        ser.close()
+# Load best model
+model.load_state_dict(torch.load('best_lstm_model.pth'))
+# Save normalization parameters
+np.save('normalization_params_lstm.npy', {
+    'mean': X_mean,
+    'std': X_std,
+    'Y_mean': Y_mean,
+    'Y_std': Y_std,
+    'n_lags': n_lags,
+    'n_features': n_features
+})
 
-if __name__ == "__main__":
-    main()
+# Plot training and validation loss
+plt.figure()
+plt.plot(train_losses, label='Training Loss')
+plt.plot(val_losses, label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend()
+plt.title('Training and Validation Loss')
+plt.show()
+
+# Evaluate on test set
+model.eval()
+with torch.no_grad():
+    Y_pred_norm = model(torch.FloatTensor(X_norm)).numpy()
+    Y_pred = (Y_pred_norm * Y_std) + Y_mean
+
+# The predictions are already aligned with Y_aligned
+Y_true_for_plot = Y_aligned
+
+# Final verification
+assert Y_true_for_plot.shape == Y_pred.shape, f"Final shape mismatch: {Y_true_for_plot.shape} vs {Y_pred.shape}"
+
+# Plot predicted vs actual
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')
+ax.scatter(Y_true_for_plot[:, 0], Y_true_for_plot[:, 1], Y_true_for_plot[:, 2], c='b', marker='o', label='True Force')
+ax.scatter(Y_pred[:, 0], Y_pred[:, 1], Y_pred[:, 2], c='r', marker='x', label='Predicted Force')
+ax.set_xlabel('Fx')
+ax.set_ylabel('Fy')
+ax.set_zlabel('Fz')
+ax.legend()
+plt.title('True vs Predicted Forces')
+plt.show()
+
+# Compute metrics
+SS_res = np.sum((Y_true_for_plot - Y_pred)**2, axis=0)
+SS_tot = np.sum((Y_true_for_plot - np.mean(Y_true_for_plot, axis=0))**2, axis=0)
+R2 = 1 - (SS_res / SS_tot)
+print('R² for [Fx, Fy, Fz]:')
+print(R2)
+
+errors = Y_true_for_plot - Y_pred
+rmse = np.sqrt(np.mean(errors**2, axis=0))
+print('RMSE for [Fx, Fy, Fz]:')
+print(rmse)
+
+# Save model
+traced_model = torch.jit.trace(model, torch.randn(1, n_lags+1, n_features))
+traced_model.save('force_calibration_lstm_model.pt')
