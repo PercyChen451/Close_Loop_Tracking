@@ -312,53 +312,69 @@ np.save('normalization_params_lstm.npy', {
     'n_lags': n_lags,
     'n_features': n_features
 })
-
 # Plot training and validation loss
-plt.figure()
+plt.figure(figsize=(10, 5))
 plt.plot(train_losses, label='Training Loss')
 plt.plot(val_losses, label='Validation Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend()
 plt.title('Training and Validation Loss')
-plt.show()
+plt.tight_layout()
+plt.show(block=False)  # Show without blocking
 
 # Evaluate on test set
 model.eval()
 with torch.no_grad():
-    Y_pred_norm = model(torch.FloatTensor(X_norm)).numpy()
+    test_inputs = torch.FloatTensor(X_test)
+    Y_pred_norm = model(test_inputs).numpy()
     Y_pred = (Y_pred_norm * Y_std) + Y_mean
+    Y_test_actual = (Y_test * Y_std) + Y_mean  # Unnormalize test data
 
-# The predictions are already aligned with Y_aligned
-Y_true_for_plot = Y_aligned
-
-# Final verification
-assert Y_true_for_plot.shape == Y_pred.shape, f"Final shape mismatch: {Y_true_for_plot.shape} vs {Y_pred.shape}"
-
-# Plot predicted vs actual
-fig = plt.figure()
+# Plot predicted vs actual for test set
+fig = plt.figure(figsize=(10, 8))
 ax = fig.add_subplot(111, projection='3d')
-ax.scatter(Y_true_for_plot[:, 0], Y_true_for_plot[:, 1], Y_true_for_plot[:, 2], c='b', marker='o', label='True Force')
-ax.scatter(Y_pred[:, 0], Y_pred[:, 1], Y_pred[:, 2], c='r', marker='x', label='Predicted Force')
-ax.set_xlabel('Fx')
-ax.set_ylabel('Fy')
-ax.set_zlabel('Fz')
+ax.scatter(Y_test_actual[:, 0], Y_test_actual[:, 1], Y_test_actual[:, 2], 
+           c='b', marker='o', label='True Force', alpha=0.6)
+ax.scatter(Y_pred[:, 0], Y_pred[:, 1], Y_pred[:, 2], 
+           c='r', marker='x', label='Predicted Force', alpha=0.6)
+ax.set_xlabel('Fx (N)')
+ax.set_ylabel('Fy (N)')
+ax.set_zlabel('Fz (N)')
 ax.legend()
-plt.title('True vs Predicted Forces')
-plt.show()
+plt.title('Test Set: True vs Predicted Forces')
+plt.tight_layout()
+plt.show(block=False)
 
-# Compute metrics
-SS_res = np.sum((Y_true_for_plot - Y_pred)**2, axis=0)
-SS_tot = np.sum((Y_true_for_plot - np.mean(Y_true_for_plot, axis=0))**2, axis=0)
+# Compute and print metrics with better formatting
+print("\n" + "="*50)
+print("Model Evaluation Metrics".center(50))
+print("="*50)
+
+# Calculate metrics
+SS_res = np.sum((Y_test_actual - Y_pred)**2, axis=0)
+SS_tot = np.sum((Y_test_actual - np.mean(Y_test_actual, axis=0))**2, axis=0)
 R2 = 1 - (SS_res / SS_tot)
-print('R² for [Fx, Fy, Fz]:')
-print(R2)
+rmse = np.sqrt(np.mean((Y_test_actual - Y_pred)**2, axis=0))
 
-errors = Y_true_for_plot - Y_pred
-rmse = np.sqrt(np.mean(errors**2, axis=0))
-print('RMSE for [Fx, Fy, Fz]:')
-print(rmse)
+# Print formatted metrics
+print("\nR² Scores:")
+print(f"  Fx: {R2[0]:.4f}")
+print(f"  Fy: {R2[1]:.4f}")
+print(f"  Fz: {R2[2]:.4f}")
+
+print("\nRMSE Values:")
+print(f"  Fx: {rmse[0]:.4f} N")
+print(f"  Fy: {rmse[1]:.4f} N")
+print(f"  Fz: {rmse[2]:.4f} N")
+
+# Print final validation loss
+print(f"\nBest Validation Loss: {best_val_loss:.6f}")
 
 # Save model
 traced_model = torch.jit.trace(model, torch.randn(1, n_lags+1, n_features))
 traced_model.save('force_calibration_lstm_model.pt')
+print("\nModel saved successfully as 'force_calibration_lstm_model.pt'")
+
+# Keep plots open
+plt.show()
