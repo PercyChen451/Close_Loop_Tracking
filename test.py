@@ -1,3 +1,5 @@
+TypeError: ReduceLROnPlateau.__init__() got an unexpected keyword argument 'verbose'
+
 import numpy as np
 import pandas as pd
 import torch
@@ -273,3 +275,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
