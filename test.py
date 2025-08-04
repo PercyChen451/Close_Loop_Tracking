@@ -1,4 +1,27 @@
-  File "/home/cardio/Documents/camera_tracking/venv/lib/python3.12/site-packages/torch/utils/data/dataset.py", line 201, in __init__
+# Create sequences with proper alignment
+def create_sequences(data, targets, n_lags):
+    X, Y = [], []
+    for i in range(n_lags, len(data)):
+        X.append(data[i-n_lags:i])  # Only previous n_lags points (shape: n_lags × n_features)
+        Y.append(targets[i])  # Current output
+    return np.array(X), np.array(Y)
+
+current_input = np.column_stack((bx, by, bz, bx2, by2, bz2))
+Y = np.column_stack((fx, fy, fz))
+
+# Verify lengths
+print(f"Raw input length: {len(current_input)}, Output length: {len(Y)}")
+assert len(current_input) == len(Y), "Input and output lengths don't match"
+
+X, Y_aligned = create_sequences(current_input, Y, n_lags)
+print(f"After sequence creation - X shape: {X.shape}, Y shape: {Y_aligned.shape}")
+
+# Reshape X to (n_samples, n_lags * n_features)
+X = X.reshape(X.shape[0], -1)  # Flatten the time steps
+print(f"After reshaping - X shape: {X.shape}")
+
+
+File "/home/cardio/Documents/camera_tracking/venv/lib/python3.12/site-packages/torch/utils/data/dataset.py", line 201, in __init__
     assert all(
            ^^^^
 AssertionError: Size mismatch between tensors
@@ -332,4 +355,5 @@ print(mae)
 # Save model
 traced_model = torch.jit.trace(model, torch.randn(1, input_size))
 traced_model.save('force_calibration_model_optimized.pt')
+
 
