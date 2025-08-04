@@ -15,7 +15,7 @@ n_lags = norm_params.get('n_lags', 3)  # Get number of lags used during training
 
 model = torch.jit.load('force_calibration_model_optimized.pt')
 model.eval()
-kf = KalmanFilter3D(process_noise=0.01, measurement_noise=0.1)
+
 # Serial port configuration
 SERIAL_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
@@ -40,63 +40,7 @@ bz_buffer = deque(maxlen=SMOOTHING_WINDOW)
 bx2_buffer = deque(maxlen=SMOOTHING_WINDOW)
 by2_buffer = deque(maxlen=SMOOTHING_WINDOW)
 bz2_buffer = deque(maxlen=SMOOTHING_WINDOW)
-class KalmanFilter3D:
-    def __init__(self, process_noise=0.01, measurement_noise=0.1):
-        """
-        Initialize 3D Kalman filter for force vectors (Fx, Fy, Fz)
-        
-        Parameters:
-        - process_noise: Process noise covariance (how much we expect the force to change)
-        - measurement_noise: Measurement noise covariance (how much we trust the sensor)
-        """
-        # State vector [Fx, Fy, Fz, dFx, dFy, dFz]
-        self.state = np.zeros(6)
-        
-        # State covariance matrix
-        self.covariance = np.eye(6)
-        
-        # Process noise covariance
-        self.Q = np.eye(6) * process_noise
-        
-        # Measurement noise covariance
-        self.R = np.eye(3) * measurement_noise
-        
-        # State transition matrix (constant velocity model)
-        self.F = np.array([
-            [1, 0, 0, 1, 0, 0],
-            [0, 1, 0, 0, 1, 0],
-            [0, 0, 1, 0, 0, 1],
-            [0, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 1, 0],
-            [0, 0, 0, 0, 0, 1]
-        ])
-        
-        # Measurement matrix (we only observe position)
-        self.H = np.array([
-            [1, 0, 0, 0, 0, 0],
-            [0, 1, 0, 0, 0, 0],
-            [0, 0, 1, 0, 0, 0]
-        ])
-    
-    def predict(self):
-        """Predict next state"""
-        self.state = self.F @ self.state
-        self.covariance = self.F @ self.covariance @ self.F.T + self.Q
-        return self.state[:3]  # Return only position components
-    
-    def update(self, measurement):
-        """Update state with new measurement"""
-        # Kalman gain
-        S = self.H @ self.covariance @ self.H.T + self.R
-        K = self.covariance @ self.H.T @ np.linalg.inv(S)
-        
-        # Update state
-        y = measurement - self.H @ self.state
-        self.state = self.state + K @ y
-        self.covariance = (np.eye(6) - K @ self.H) @ self.covariance
-        
-        return self.state[:3]
-        
+
 def calibrate_force_sensor(sample_delay=0.01, serial_port='/dev/ttyUSB0', baud_rate=115200):
     """Collects 100 samples from serial-connected force sensor and returns average offsets."""
     import serial  # Local import to avoid dependency if not using serial
@@ -233,17 +177,15 @@ def main():
                 smoothed_bz2 = np.mean(bz2_buffer) if bz2_buffer else bz2
                 
                 # Predict force
-                raw_force = predict_force(
+                Fx, Fy, Fz = predict_force(
                     smoothed_bx, smoothed_by, smoothed_bz,
                     smoothed_bx2, smoothed_by2, smoothed_bz2
                 )
-                kf.predict()
-                filtered_force = kf.update(raw_force)
-                # Print results
-                print(f"\rFx: {filtered_force[0]:.4f} N | Fy: {filtered_force[1]:.4f} N | Fz: {filtered_force[2]:.4f} N", 
-                end='', flush=True)
                 
-            time.sleep(0.01)  # Small delay to prevent CPU overload
+                # Print results
+                print(f"\rFx: {Fx:.4f} N | Fy: {Fy:.4f} N | Fz: {Fz:.4f} N", end='', flush=True)
+                
+            time.sleep(0.001)  # Small delay to prevent CPU overload
             
     except KeyboardInterrupt:
         print("\nStopping...")
