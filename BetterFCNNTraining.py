@@ -1,3 +1,8 @@
+^^^^^^^^^^^^^^^
+RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: [torch.FloatTensor [128, 1]], which is output 0 of AsStridedBackward0, is at version 3; expected version 1 instead. Hint: enable anomaly detection to find the operation that failed to compute its gradient, with torch.autograd.set_detect_anomaly(True).
+                                         and at val_loss += criterion(pred, y).item(), criterion got an error marker
+
+
 from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
 import torch.nn.functional as F
 import numpy as np
@@ -348,6 +353,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
