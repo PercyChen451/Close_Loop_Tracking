@@ -5,263 +5,285 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
+from pathlib import Path
 
-# 1. Data Loading with Strict Alignment
-def load_and_align_data(filepath):
+# ======================
+# 1. Data Preparation
+# ======================
+
+def load_and_align_data(filepath, shift_i=2):
+    """Load and align sensor data with proper time shifting"""
     data = pd.read_csv(filepath)
     
-    # Extract and zero all columns
-    cols = ['Fx', 'Fy', 'Fz', 'Bx1', 'By1', 'Bz1', 'Bx2', 'By2', 'Bz2']
-    data = data[cols].apply(lambda x: x - x.iloc[0])
+    # Zero all measurements
+    for col in ['Fx', 'Fy', 'Fz', 'Bx1', 'By1', 'Bz1', 'Bx2', 'By2', 'Bz2']:
+        data[col] = data[col] - data[col].iloc[0]
     
     # Apply time shift
-    shift_i = 2
     features = data[['Bx1', 'By1', 'Bz1', 'Bx2', 'By2', 'Bz2']].values[shift_i:]
     targets = data[['Fx', 'Fy', 'Fz']].values[:-shift_i]
     
     # Ensure perfect alignment
     min_length = min(len(features), len(targets))
-    features = features[:min_length]
-    targets = targets[:min_length]
-    
-    return features, targets
+    return features[:min_length], targets[:min_length]
 
-# 2. Sequence Creation with Validation
 def create_sequences(features, targets, n_lags):
+    """Create time-lagged sequences"""
     X, Y = [], []
     for i in range(n_lags, len(features)):
-        X.append(features[i-n_lags:i].flatten())
+        X.append(features[i-n_lags:i].flatten())  # Flatten time steps
         Y.append(targets[i])
     return np.array(X), np.array(Y)
 
-# 3. Data Preparation Pipeline
-def prepare_data(filepath, n_lags=3, test_size=0.2):
-    # Load and align
+def prepare_datasets(filepath, n_lags=3, val_ratio=0.15, test_ratio=0.15):
+    """Full data preparation pipeline"""
     features, targets = load_and_align_data(filepath)
-    
-    # Create sequences
     X, Y = create_sequences(features, targets, n_lags)
     
     # Split indices
-    split_idx = int(len(X) * (1 - test_size))
+    test_split = int(len(X) * (1 - test_ratio))
+    val_split = int(test_split * (1 - val_ratio))
     
-    # Train/Test split
-    X_train, X_test = X[:split_idx], X[split_idx:]
-    Y_train, Y_test = Y[:split_idx], Y[split_idx:]
+    # Split datasets
+    X_train, X_val, X_test = X[:val_split], X[val_split:test_split], X[test_split:]
+    Y_train, Y_val, Y_test = Y[:val_split], Y[val_split:test_split], Y[test_split:]
     
-    # Normalize using train stats
+    # Normalize using training stats
     X_mean, X_std = X_train.mean(axis=0), X_train.std(axis=0)
     Y_mean, Y_std = Y_train.mean(axis=0), Y_train.std(axis=0)
     
-    X_train = (X_train - X_mean) / X_std
-    X_test = (X_test - X_mean) / X_std
-    Y_train = (Y_train - Y_mean) / Y_std
-    Y_test = (Y_test - Y_mean) / Y_std
+    def normalize(x, mean, std): 
+        return (x - mean) / (std + 1e-8)  # Small epsilon to avoid division by zero
     
-    return (X_train, Y_train, X_test, Y_test, 
-            X_mean, X_std, Y_mean, Y_std)
+    return (
+        normalize(X_train, X_mean, X_std), normalize(Y_train, Y_mean, Y_std),
+        normalize(X_val, X_mean, X_std), normalize(Y_val, Y_mean, Y_std),
+        normalize(X_test, X_mean, X_std), normalize(Y_test, Y_mean, Y_std),
+        X_mean, X_std, Y_mean, Y_std
+    )
 
-# 4. Main Execution
-if __name__ == "__main__":
-    # Parameters
-    n_lags = 3
-    batch_size = 64
-    epochs = 300
+# ======================
+# 2. Model Definition
+# ======================
+
+class ForceCalibrationModel(nn.Module):
+    def __init__(self, input_size):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            
+            nn.Linear(64, 3)
+        )
     
-    # Prepare data
-    X_train, Y_train, X_test, Y_test, X_mean, X_std, Y_mean, Y_std = prepare_data('percy81.csv', n_lags)
-    
-    # Convert to tensors
+    def forward(self, x):
+        return self.net(x)
+
+# ======================
+# 3. Training Utilities
+# ======================
+
+def create_loaders(X_train, Y_train, X_val, Y_val, X_test, Y_test, batch_size=64):
+    """Create PyTorch data loaders"""
     train_data = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(Y_train))
+    val_data = TensorDataset(torch.FloatTensor(X_val), torch.FloatTensor(Y_val))
     test_data = TensorDataset(torch.FloatTensor(X_test), torch.FloatTensor(Y_test))
     
-    # Create loaders
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_data, batch_size=batch_size)
-    
-    # Model definition
-    class ForceModel(nn.Module):
-        def __init__(self, input_size):
-            super().__init__()
-            self.net = nn.Sequential(
-                nn.Linear(input_size, 256),
-                nn.BatchNorm1d(256),
-                nn.ReLU(),
-                nn.Dropout(0.3),
-                nn.Linear(256, 128),
-                nn.BatchNorm1d(128),
-                nn.ReLU(),
-                nn.Linear(128, 3)
-            )
-        
-        def forward(self, x):
-            return self.net(x)
-    
-    model = ForceModel(X_train.shape[1])
-    
-    # Training setup
+    return (
+        DataLoader(train_data, batch_size=batch_size, shuffle=True),
+        DataLoader(val_data, batch_size=batch_size),
+        DataLoader(test_data, batch_size=batch_size)
+    )
+
+def train_model(model, train_loader, val_loader, epochs=300, patience=20):
+    """Training loop with early stopping"""
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
     
-    # Training loop
+    train_losses, val_losses = [], []
     best_loss = float('inf')
+    best_epoch = 0
+    
     for epoch in range(epochs):
+        # Training phase
         model.train()
         train_loss = 0
         for x, y in train_loader:
             optimizer.zero_grad()
-            pred = model(x)
-            loss = criterion(pred, y)
+            outputs = model(x)
+            loss = criterion(outputs, y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             train_loss += loss.item()
         
-        # Validation
+        # Validation phase
         model.eval()
-        test_loss = 0
+        val_loss = 0
         with torch.no_grad():
-            for x, y in test_loader:
-                pred = model(x)
-                test_loss += criterion(pred, y).item()
+            for x, y in val_loader:
+                outputs = model(x)
+                val_loss += criterion(outputs, y).item()
         
-        # Update scheduler
-        avg_test_loss = test_loss/len(test_loader)
-        scheduler.step(avg_test_loss)
+        # Record metrics
+        avg_train = train_loss / len(train_loader)
+        avg_val = val_loss / len(val_loader)
+        train_losses.append(avg_train)
+        val_losses.append(avg_val)
         
         # Early stopping check
-        if avg_test_loss < best_loss:
-            best_loss = avg_test_loss
+        if avg_val < best_loss:
+            best_loss = avg_val
+            best_epoch = epoch
             torch.save(model.state_dict(), 'best_model.pth')
         
-        if (epoch+1) % 10 == 0:
-            print(f'Epoch {epoch+1}: Train Loss {train_loss/len(train_loader):.4f}, Test Loss {avg_test_loss:.4f}')
+        # Learning rate scheduling
+        scheduler.step(avg_val)
+        
+        # Progress reporting
+        if (epoch + 1) % 10 == 0:
+            print(f'Epoch {epoch+1}/{epochs}: Train Loss: {avg_train:.4f}, Val Loss: {avg_val:.4f}')
+        
+        # Early stopping
+        if epoch - best_epoch > patience:
+            print(f"Early stopping at epoch {epoch+1}")
+            break
+    
+    return train_losses, val_losses
+
+# ======================
+# 4. Evaluation & Visualization
+# ======================
+
+def evaluate_model(model, test_loader, Y_mean, Y_std):
+    """Evaluate model on test set"""
+    model.eval()
+    predictions, truths = [], []
+    
+    with torch.no_grad():
+        for x, y in test_loader:
+            pred = model(x)
+            predictions.append(pred.numpy())
+            truths.append(y.numpy())
+    
+    # Denormalize predictions
+    preds = np.concatenate(predictions) * Y_std + Y_mean
+    trues = np.concatenate(truths) * Y_std + Y_mean
+    
+    # Calculate metrics
+    errors = trues - preds
+    mae = np.mean(np.abs(errors), axis=0)
+    rmse = np.sqrt(np.mean(errors**2, axis=0))
+    r2 = 1 - np.sum(errors**2, axis=0) / np.sum((trues - np.mean(trues, axis=0))**2, axis=0)
+    
+    return preds, trues, mae, rmse, r2
+
+def plot_results(train_loss, val_loss, preds, trues):
+    """Generate diagnostic plots"""
+    plt.figure(figsize=(15, 10))
+    
+    # Loss curves
+    plt.subplot(2, 2, 1)
+    plt.plot(train_loss, label='Train Loss')
+    plt.plot(val_loss, label='Val Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Training History')
+    
+    # Predictions vs Actual (Fx)
+    plt.subplot(2, 2, 2)
+    plt.plot(trues[:200, 0], label='True Fx')
+    plt.plot(preds[:200, 0], label='Pred Fx')
+    plt.legend()
+    plt.title('Fx Prediction')
+    
+    # Predictions vs Actual (Fy)
+    plt.subplot(2, 2, 3)
+    plt.plot(trues[:200, 1], label='True Fy')
+    plt.plot(preds[:200, 1], label='Pred Fy')
+    plt.legend()
+    plt.title('Fy Prediction')
+    
+    # Predictions vs Actual (Fz)
+    plt.subplot(2, 2, 4)
+    plt.plot(trues[:200, 2], label='True Fz')
+    plt.plot(preds[:200, 2], label='Pred Fz')
+    plt.legend()
+    plt.title('Fz Prediction')
+    
+    plt.tight_layout()
+    plt.show()
+
+# ======================
+# 5. Main Execution
+# ======================
+
+def main():
+    # Configuration
+    config = {
+        'data_path': 'percy81.csv',
+        'n_lags': 3,
+        'batch_size': 64,
+        'epochs': 300,
+        'patience': 20
+    }
+    
+    # Prepare data
+    (X_train, Y_train, X_val, Y_val, 
+     X_test, Y_test, X_mean, X_std, Y_mean, Y_std) = prepare_datasets(
+        config['data_path'], 
+        n_lags=config['n_lags']
+    )
+    
+    # Create model
+    model = ForceCalibrationModel(X_train.shape[1])
+    
+    # Create data loaders
+    train_loader, val_loader, test_loader = create_loaders(
+        X_train, Y_train, X_val, Y_val, X_test, Y_test,
+        batch_size=config['batch_size']
+    )
+    
+    # Train model
+    print("Starting training...")
+    train_loss, val_loss = train_model(
+        model, train_loader, val_loader,
+        epochs=config['epochs'],
+        patience=config['patience']
+    )
     
     # Load best model
     model.load_state_dict(torch.load('best_model.pth'))
     
-    # Evaluation
-    model.eval()
-    with torch.no_grad():
-        y_pred = model(torch.FloatTensor(X_test)).numpy()
-        y_pred = y_pred * Y_std + Y_mean
-        y_true = Y_test * Y_std + Y_mean
+    # Evaluate
+    preds, trues, mae, rmse, r2 = evaluate_model(model, test_loader, Y_mean, Y_std)
     
-    # Calculate metrics
-    mae = np.mean(np.abs(y_true - y_pred), axis=0)
-    rmse = np.sqrt(np.mean((y_true - y_pred)**2, axis=0)
-    r2 = 1 - np.sum((y_true - y_pred)**2, axis=0) / np.sum((y_true - np.mean(y_true, axis=0))**2, axis=0)
-    
-    print(f"\nFinal Performance:")
-    print(f"MAE: {mae}")
+    # Print results
+    print("\n=== Final Evaluation ===")
+    print(f"MAE:  {mae}")
     print(f"RMSE: {rmse}")
-    print(f"R²: {r2}")
-# [Previous fixed code up to the evaluation section]
-
-    # Evaluation
-    model.eval()
-    with torch.no_grad():
-        # Get predictions for test set
-        Y_pred_norm = model(torch.FloatTensor(X_test)).numpy()
-        Y_pred_test = (Y_pred_norm * Y_std) + Y_mean
-        Y_true_test = (Y_test * Y_std) + Y_mean
-        
-        # Get predictions for full dataset (for plotting)
-        Y_pred_full_norm = model(torch.FloatTensor(np.vstack([X_train, X_test]))).numpy()
-        Y_pred_full = (Y_pred_full_norm * Y_std) + Y_mean
-        Y_true_full = (np.vstack([Y_train, Y_test]) * Y_std) + Y_mean
-
-    # 1. Training and Validation Loss Plot
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Training Loss')
-    plt.plot(val_losses, label='Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.title('Training and Validation Loss')
-    plt.grid(True)
-    plt.show()
-
-    # 2. Component-wise Time Series Plot
-    fig, axes = plt.subplots(3, 1, figsize=(12, 8))
-    components = ['Fx', 'Fy', 'Fz']
-    time_points = min(200, len(Y_true_test))  # Show first 200 points or all if less
+    print(f"R²:   {r2}")
     
-    for i, ax in enumerate(axes):
-        ax.plot(Y_true_test[:time_points, i], label='True')
-        ax.plot(Y_pred_test[:time_points, i], label='Predicted')
-        ax.set_title(components[i])
-        ax.legend()
-        ax.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    # 3. Error Distribution Plots
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    errors = Y_true_test - Y_pred_test
+    # Plot results
+    plot_results(train_loss, val_loss, preds, trues)
     
-    for i, ax in enumerate(axes):
-        ax.hist(errors[:, i], bins=50)
-        ax.set_title(f'{components[i]} Error Distribution')
-        ax.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    # 4. 3D Scatter Plot (True vs Predicted)
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    
-    # Plot subset of points for clarity
-    plot_every = 10  # Plot every 10th point
-    ax.scatter(Y_true_full[::plot_every, 0], 
-               Y_true_full[::plot_every, 1], 
-               Y_true_full[::plot_every, 2], 
-               c='b', marker='o', label='True Force', alpha=0.5)
-    
-    ax.scatter(Y_pred_full[::plot_every, 0], 
-               Y_pred_full[::plot_every, 1], 
-               Y_pred_full[::plot_every, 2], 
-               c='r', marker='x', label='Predicted Force', alpha=0.5)
-    
-    ax.set_xlabel('Fx')
-    ax.set_ylabel('Fy')
-    ax.set_zlabel('Fz')
-    ax.legend()
-    plt.title('True vs Predicted Forces (Full Dataset)')
-    plt.show()
-
-    # 5. Prediction Error vs Magnitude Plot
-    magnitudes = np.linalg.norm(Y_true_test, axis=1)
-    error_magnitudes = np.linalg.norm(errors, axis=1)
-    
-    plt.figure(figsize=(10, 5))
-    plt.scatter(magnitudes, error_magnitudes, alpha=0.5)
-    plt.xlabel('Force Magnitude (True)')
-    plt.ylabel('Prediction Error Magnitude')
-    plt.title('Prediction Error vs Force Magnitude')
-    plt.grid(True)
-    plt.show()
-
-    # Calculate and print metrics
-    SS_res = np.sum((Y_true_test - Y_pred_test)**2, axis=0)
-    SS_tot = np.sum((Y_true_test - np.mean(Y_true_test, axis=0))**2, axis=0)
-    R2 = 1 - (SS_res / SS_tot)
-    
-    errors = Y_true_test - Y_pred_test
-    rmse = np.sqrt(np.mean(errors**2, axis=0))
-    mae = np.mean(np.abs(errors), axis=0)
-    
-    print('\n=== Performance Metrics ===')
-    print('R² for [Fx, Fy, Fz]:')
-    print(R2)
-    print('\nRMSE for [Fx, Fy, Fz]:')
-    print(rmse)
-    print('\nMAE for [Fx, Fy, Fz]:')
-    print(mae)
-
     # Save model and normalization parameters
-    torch.save(model.state_dict(), 'best_force_model.pth')
+    torch.save(model.state_dict(), 'force_calibration_model_final.pth')
     np.savez('normalization_params.npz',
              X_mean=X_mean, X_std=X_std,
              Y_mean=Y_mean, Y_std=Y_std,
-             n_lags=n_lags)
+             n_lags=config['n_lags'])
+
+if __name__ == "__main__":
+    main()
