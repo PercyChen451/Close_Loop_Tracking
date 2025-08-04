@@ -123,11 +123,18 @@ class ComponentWeightedLoss(nn.Module):
 def train_model(model, train_loader, val_loader, epochs=500):
     criterion = ComponentWeightedLoss()
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    
+    # Modified scheduler without verbose
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 'min', patience=15, factor=0.5, verbose=True)
+        optimizer, 
+        mode='min',
+        factor=0.5,
+        patience=15,
+        min_lr=1e-6
+    )
     
     best_val_loss = float('inf')
-    history = {'train': [], 'val': [], 'components': []}
+    history = {'train': [], 'val': [], 'components': [], 'lr': []}
     
     for epoch in range(epochs):
         # Training phase
@@ -161,8 +168,16 @@ def train_model(model, train_loader, val_loader, epochs=500):
         train_comps /= len(train_loader)
         val_comps /= len(val_loader)
         
-        # Update scheduler
+        # Track learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        history['lr'].append(current_lr)
+        
+        # Manual LR change detection
+        old_lr = current_lr
         scheduler.step(avg_val)
+        new_lr = optimizer.param_groups[0]['lr']
+        if new_lr != old_lr:
+            print(f"\nLearning rate reduced from {old_lr:.2e} to {new_lr:.2e}")
         
         # Save best model
         if avg_val < best_val_loss:
@@ -176,8 +191,7 @@ def train_model(model, train_loader, val_loader, epochs=500):
         
         # Print progress
         if (epoch + 1) % 10 == 0:
-            lr = optimizer.param_groups[0]['lr']
-            print(f'Epoch {epoch+1}/{epochs} | LR: {lr:.2e}')
+            print(f'Epoch {epoch+1}/{epochs} | LR: {current_lr:.2e}')
             print(f'Train Loss: {avg_train:.6f} | Val Loss: {avg_val:.6f}')
             print(f'Component MAEs: Fx={val_comps[0]:.4f}, Fy={val_comps[1]:.4f}, Fz={val_comps[2]:.4f}\n')
     
@@ -275,4 +289,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
