@@ -1,3 +1,9 @@
+  File "/home/cardio/Documents/camera_tracking/venv/lib/python3.12/site-packages/torch/utils/data/dataset.py", line 201, in __init__
+    assert all(
+           ^^^^
+AssertionError: Size mismatch between tensors
+
+
 import numpy as np
 import pandas as pd
 import torch
@@ -326,3 +332,4 @@ print(mae)
 # Save model
 traced_model = torch.jit.trace(model, torch.randn(1, input_size))
 traced_model.save('force_calibration_model_optimized.pt')
+
