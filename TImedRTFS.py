@@ -7,13 +7,14 @@ from collections import defaultdict
 
 # Load normalization and model
 norm_params = np.load('normalization_params.npy', allow_pickle=True).item()
-X_mean = norm_params['mean'].astype(np.float32)
-X_std = norm_params['std'].astype(np.float32)
-Y_mean = norm_params.get('Y_mean', 0).astype(np.float32)
-Y_std = norm_params.get('Y_std', 1).astype(np.float32)
-n_lags = norm_params.get('n_lags', 3)  # Get number of lags used during training
+X_median = norm_params['X_median'].astype(np.float32)
+X_iqr = norm_params['X_iqr'].astype(np.float32)
+Y_median = norm_params['Y_median'].astype(np.float32)
+Y_iqr = norm_params['Y_iqr'].astype(np.float32)
+n_lags = norm_params['n_lags']  # Get number of lags used during training
 
-model = torch.jit.load('force_calibration_model_optimized.pt')
+model = ForceCalibrationModel(n_lags * 6 * 2)  # n_lags * 6 features * 2 (current + previous)
+model.load_state_dict(torch.load('best_model.pth'))
 model.eval()
 
 # Serial port configuration
@@ -32,6 +33,8 @@ bz_history = deque(maxlen=HISTORY_BUFFER_SIZE)
 bx2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
 by2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
 bz2_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+b_mag_history = deque(maxlen=HISTORY_BUFFER_SIZE)
+b2_mag_history = deque(maxlen=HISTORY_BUFFER_SIZE)
 
 # Smoothing buffers
 bx_buffer = deque(maxlen=SMOOTHING_WINDOW)
@@ -42,9 +45,7 @@ by2_buffer = deque(maxlen=SMOOTHING_WINDOW)
 bz2_buffer = deque(maxlen=SMOOTHING_WINDOW)
 
 def calibrate_force_sensor(sample_delay=0.01, serial_port='/dev/ttyUSB0', baud_rate=115200):
-    """Collects 100 samples from serial-connected force sensor and returns average offsets."""
-    import serial  # Local import to avoid dependency if not using serial
-    
+    """Collects 500 samples from serial-connected force sensor and returns average offsets."""
     print("Starting calibration - keep sensor at rest...")
     print("Collecting 500 samples", end='', flush=True)
     
@@ -107,8 +108,20 @@ def parse_serial_line(line):
         pass
     return None
 
+def normalize_input(x, median, iqr):
+    """Normalize using robust scaling"""
+    return (x - median) / (iqr + 1e-8)
+
+def denormalize_output(y, median, iqr):
+    """Denormalize predictions"""
+    return y * iqr + median
+
 def predict_force(bx, by, bz, bx2, by2, bz2):
     """Normalize inputs and predict force using time-lagged features"""
+    # Calculate derived features
+    b_mag = np.sqrt(bx**2 + by**2 + bz**2)
+    b2_mag = np.sqrt(bx2**2 + by2**2 + bz2**2)
+    
     # Add current sample to history buffers
     bx_history.append(bx)
     by_history.append(by)
@@ -116,6 +129,8 @@ def predict_force(bx, by, bz, bx2, by2, bz2):
     bx2_history.append(bx2)
     by2_history.append(by2)
     bz2_history.append(bz2)
+    b_mag_history.append(b_mag)
+    b2_mag_history.append(b2_mag)
     
     # Only predict when we have enough history
     if len(bx_history) < HISTORY_BUFFER_SIZE:
@@ -126,16 +141,17 @@ def predict_force(bx, by, bz, bx2, by2, bz2):
     for i in range(HISTORY_BUFFER_SIZE):
         features.extend([
             bx_history[i], by_history[i], bz_history[i],
-            bx2_history[i], by2_history[i], bz2_history[i]
+            bx2_history[i], by2_history[i], bz2_history[i],
+            b_mag_history[i], b2_mag_history[i]
         ])
     
     X_new = np.array([features], dtype=np.float32)
-    X_norm = (X_new - X_mean) / X_std
+    X_norm = normalize_input(X_new, X_median, X_iqr)
     
     with torch.no_grad():
         Y_norm = model(torch.from_numpy(X_norm)).numpy()[0]
     
-    return (Y_norm * Y_std) + Y_mean  # [Fx, Fy, Fz]
+    return denormalize_output(Y_norm, Y_median, Y_iqr)  # [Fx, Fy, Fz]
 
 def main():
     # Initialize serial connection
