@@ -8,53 +8,56 @@ from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
-# 1. Enhanced Data Preparation with Feature Engineering
+# 1. Enhanced Data Preparation with Normalization Parameters
 def prepare_data(filepath, n_lags=5, test_size=0.15, val_size=0.15, shift_i=2):
-    # Load and verify data
-    data = pd.read_csv(filepath)
-    print(f"Original data shape: {data.shape}")
-    # Apply time shift with validation
-    print(f"Applying time shift of {shift_i} samples")
-    features = data[['Bx1', 'By1', 'Bz1', 'Bx2', 'By2', 'Bz2']].values[shift_i:]
-    targets = data[['Fx', 'Fy', 'Fz']].values[:-shift_i]
-    # Verify alignment
-    assert len(features) == len(targets), \
-        f"Alignment failed! Features: {len(features)}, Targets: {len(targets)}"
-    # Feature engineering
-    def add_features(feats):
-        B_mag = np.sqrt(feats[:,0]**2 + feats[:,1]**2 + feats[:,2]**2)
-        B2_mag = np.sqrt(feats[:,3]**2 + feats[:,4]**2 + feats[:,5]**2)
-        return np.column_stack((feats, B_mag, B2_mag))
-    features = add_features(features)
-    print(f"Features shape after engineering: {features.shape}")
-    # Create sequences with size validation
-    def create_sequences(feats, targs, n_lags):
-        X, Y = [], []
-        for i in range(n_lags, len(feats)):
-            X.append(feats[i-n_lags:i+1].flatten())
-            Y.append(targs[i])
-        return np.array(X), np.array(Y)
-    X, Y = create_sequences(features, targets, n_lags)
-    print(f"Final sequence shapes - X: {X.shape}, Y: {Y.shape}")
-    # Split with size validation
-    test_split = int(len(X) * (1 - test_size))
-    val_split = int(test_split * (1 - val_size))
-    X_train, X_val, X_test = X[:val_split], X[val_split:test_split], X[test_split:]
-    Y_train, Y_val, Y_test = Y[:val_split], Y[val_split:test_split], Y[test_split:]
-    print(f"Train shapes: X{X_train.shape}, Y{Y_train.shape}")
-    print(f"Val shapes: X{X_val.shape}, Y{Y_val.shape}")
-    print(f"Test shapes: X{X_test.shape}, Y{Y_test.shape}")
+    # [Previous data loading and feature engineering code remains the same until after train/val/test split]
+    
+    # Calculate robust scaling parameters (median and IQR)
+    def calculate_robust_params(data):
+        median = np.median(data, axis=0)
+        iqr = np.percentile(data, 75, axis=0) - np.percentile(data, 25, axis=0)
+        return median, iqr
+    
+    X_median, X_iqr = calculate_robust_params(X_train)
+    Y_median, Y_iqr = calculate_robust_params(Y_train)
+    
+    # Apply normalization
+    def normalize(data, median, iqr):
+        return (data - median) / (iqr + 1e-8)
+    
+    X_train_norm = normalize(X_train, X_median, X_iqr)
+    X_val_norm = normalize(X_val, X_median, X_iqr)
+    X_test_norm = normalize(X_test, X_median, X_iqr)
+    
+    Y_train_norm = normalize(Y_train, Y_median, Y_iqr)
+    Y_val_norm = normalize(Y_val, Y_median, Y_iqr)
+    Y_test_norm = normalize(Y_test, Y_median, Y_iqr)
+    
+    # Prepare normalization parameters dictionary
+    norm_params = {
+        'X_median': X_median,
+        'X_iqr': X_iqr,
+        'Y_median': Y_median,
+        'Y_iqr': Y_iqr,
+        'n_lags': n_lags,
+        'shift_i': shift_i,
+        'feature_cols': ['Bx1', 'By1', 'Bz1', 'Bx2', 'By2', 'Bz2', 'B_mag', 'B2_mag'],
+        'target_cols': ['Fx', 'Fy', 'Fz']
+    }
+    
     # Convert to tensors with explicit size check
     def safe_tensor_convert(x, y):
-        assert x.shape[0] == y.shape[0], \
-            f"Size mismatch! X: {x.shape[0]}, Y: {y.shape[0]}"
+        assert x.shape[0] == y.shape[0], f"Size mismatch! X: {x.shape[0]}, Y: {y.shape[0]}"
         return torch.FloatTensor(x), torch.FloatTensor(y)
-    X_train_t, Y_train_t = safe_tensor_convert(X_train, Y_train)
-    X_val_t, Y_val_t = safe_tensor_convert(X_val, Y_val)
-    X_test_t, Y_test_t = safe_tensor_convert(X_test, Y_test)
+    
+    X_train_t, Y_train_t = safe_tensor_convert(X_train_norm, Y_train_norm)
+    X_val_t, Y_val_t = safe_tensor_convert(X_val_norm, Y_val_norm)
+    X_test_t, Y_test_t = safe_tensor_convert(X_test_norm, Y_test_norm)
+    
     return (X_train_t, Y_train_t,
             X_val_t, Y_val_t,
-            X_test_t, Y_test_t)
+            X_test_t, Y_test_t,
+            norm_params)
 
 
 
@@ -198,7 +201,7 @@ def train_model(model, train_loader, val_loader, epochs=500):
     return history
 
 # 5. Evaluation and Visualization
-def evaluate_model(model, test_loader):
+def evaluate_model(model, test_loader, norm_params):
     model.eval()
     predictions, truths = [], []
     
@@ -208,16 +211,23 @@ def evaluate_model(model, test_loader):
             predictions.append(pred.numpy())
             truths.append(y.numpy())
     
+    # Denormalize predictions and truths
+    def denormalize(data, median, iqr):
+        return data * iqr + median
+    
     preds = np.concatenate(predictions)
     trues = np.concatenate(truths)
     
-    # Calculate metrics
-    errors = trues - preds
+    preds_denorm = denormalize(preds, norm_params['Y_median'], norm_params['Y_iqr'])
+    trues_denorm = denormalize(trues, norm_params['Y_median'], norm_params['Y_iqr'])
+    
+    # Calculate metrics on denormalized data
+    errors = trues_denorm - preds_denorm
     mae = np.mean(np.abs(errors), axis=0)
     rmse = np.sqrt(np.mean(errors**2, axis=0))
-    r2 = 1 - np.sum(errors**2, axis=0)/np.sum((trues - np.mean(trues, axis=0))**2, axis=0)
+    r2 = 1 - np.sum(errors**2, axis=0)/np.sum((trues_denorm - np.mean(trues_denorm, axis=0))**2, axis=0)
     
-    return preds, trues, mae, rmse, r2
+    return preds_denorm, trues_denorm, mae, rmse, r2
 
 def plot_results(history, preds, trues):
     plt.figure(figsize=(18, 6))
@@ -257,9 +267,21 @@ def plot_results(history, preds, trues):
 # Main Execution
 def main():
     # Prepare data
-    X_train, Y_train, X_val, Y_val, X_test, Y_test= prepare_data(
-        'percy81.csv', n_lags=5, shift_i = 2)
+    (X_train, Y_train, X_val, Y_val, 
+     X_test, Y_test, norm_params) = prepare_data('percy81.csv', n_lags=5)
     
+    # Save normalization parameters
+    np.save('normalization_params.npy', norm_params)
+    print("Saved normalization parameters to normalization_params.npy")
+    
+    # Print normalization parameters for verification
+    print("\nNormalization Parameters:")
+    print(f"X median: {norm_params['X_median']}")
+    print(f"X IQR: {norm_params['X_iqr']}")
+    print(f"Y median: {norm_params['Y_median']}")
+    print(f"Y IQR: {norm_params['Y_iqr']}")
+    print(f"Time lags: {norm_params['n_lags']}")
+    print(f"Time shift: {norm_params['shift_i']}")
     # Create loaders
     train_loader = DataLoader(TensorDataset(X_train, Y_train), batch_size=512, shuffle=True)
     val_loader = DataLoader(TensorDataset(X_val, Y_val), batch_size=256)
@@ -276,7 +298,7 @@ def main():
     model.load_state_dict(torch.load('best_model.pth'))
     
     # Evaluate
-    preds, trues, mae, rmse, r2 = evaluate_model(model, test_loader)
+        preds, trues, mae, rmse, r2 = evaluate_model(model, test_loader, norm_params)
     
     # Results
     print("\n=== Final Test Results ===")
@@ -289,4 +311,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
