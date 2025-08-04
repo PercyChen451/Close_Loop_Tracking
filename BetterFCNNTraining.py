@@ -1,4 +1,5 @@
-
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
+import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 import torch
@@ -65,7 +66,7 @@ def prepare_data(filepath, n_lags=5, test_size=0.15, val_size=0.15, shift_i=2):
 class ForceCalibrationModel(nn.Module):
     def __init__(self, input_size):
         super().__init__()
-        # Shared backbone
+        # Shared layers
         self.shared = nn.Sequential(
             nn.Linear(input_size, 512),
             nn.BatchNorm1d(512),
@@ -74,28 +75,31 @@ class ForceCalibrationModel(nn.Module):
             
             nn.Linear(512, 512),
             nn.BatchNorm1d(512),
-            nn.LeakyReLU(0.1),
-            nn.Dropout(0.3)
+            nn.LeakyReLU(0.1)
         )
         
-        # Component-specific heads
-        self.fx_head = nn.Sequential(
-            nn.Linear(512, 128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 1))
-        
-        self.fy_head = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.LeakyReLU(0.1),
-            nn.Linear(256, 1))
-        
-        self.fz_head = nn.Sequential(
-            nn.Linear(512, 512),
-            nn.LeakyReLU(0.1),
-            nn.Linear(512, 1))
-        
-        # Initialize weights
-        self._init_weights()
+        # Component-specific heads with isolated parameters
+        self.fx_head = self._build_head(512, 128)
+        self.fy_head = self._build_head(512, 256, depth=3)  # Deeper for Fy
+        self.fz_head = self._build_head(512, 128)
+    
+    def _build_head(self, in_features, hidden_size, depth=2):
+        layers = []
+        for i in range(depth-1):
+            layers.extend([
+                nn.Linear(in_features if i==0 else hidden_size, hidden_size),
+                nn.SiLU()
+            ])
+        layers.append(nn.Linear(hidden_size, 1))
+        return nn.Sequential(*layers)
+    
+    def forward(self, x):
+        shared = self.shared(x)
+        return torch.cat([
+            self.fx_head(shared),
+            self.fy_head(shared),
+            self.fz_head(shared)
+        ], dim=1)
     
     def _init_weights(self):
         for m in self.modules():
@@ -124,36 +128,69 @@ class ComponentWeightedLoss(nn.Module):
 
 # 4. Enhanced Training Process
 def train_model(model, train_loader, val_loader, epochs=500):
-    criterion = ComponentWeightedLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    # Separate optimizers for each component head
+    optimizers = {
+        'fx': optim.AdamW(model.fx_head.parameters(), lr=1e-4, weight_decay=1e-5),
+        'fy': optim.AdamW(model.fy_head.parameters(), lr=5e-4, weight_decay=1e-5),  # Higher LR for Fy
+        'fz': optim.AdamW(model.fz_head.parameters(), lr=1e-4, weight_decay=1e-5),
+        'shared': optim.AdamW(model.shared.parameters(), lr=1e-4, weight_decay=1e-5)
+    }
     
-    # Modified scheduler without verbose
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        mode='min',
-        factor=0.8,
-        patience=15,
-        min_lr=1e-6
-    )
+    # Component-specific schedulers
+    schedulers = {
+        'fx': CosineAnnealingLR(optimizers['fx'], T_max=epochs),
+        'fy': OneCycleLR(optimizers['fy'], max_lr=1e-3, 
+                        steps_per_epoch=len(train_loader), epochs=epochs),
+        'fz': CosineAnnealingLR(optimizers['fz'], T_max=epochs),
+        'shared': CosineAnnealingLR(optimizers['shared'], T_max=epochs)
+    }
     
     best_val_loss = float('inf')
     history = {'train': [], 'val': [], 'components': [], 'lr': []}
-    
+
     for epoch in range(epochs):
-        # Training phase
         model.train()
         train_loss = 0
         train_comps = torch.zeros(3)
+        
         for x, y in train_loader:
-            optimizer.zero_grad()
-            pred = model(x)
-            loss = criterion(pred, y)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            # Zero all gradients
+            for opt in optimizers.values():
+                opt.zero_grad()
             
-            train_loss += loss.item()
-            train_comps += (pred - y).abs().mean(dim=0).detach()
+            # Forward pass
+            pred = model(x)
+            
+            # Component-specific losses
+            losses = {
+                'fx': F.l1_loss(pred[:,0], y[:,0]),  # MAE for Fx
+                'fy': F.huber_loss(pred[:,1], y[:,1]),  # More robust for Fy
+                'fz': F.l1_loss(pred[:,2], y[:,2])  # MAE for Fz
+            }
+            
+            # Physics regularization (optional)
+            physics_reg = 0.1 * F.relu(-pred[:,1]).mean()  # Penalize negative Fy
+            total_loss = sum(losses.values()) + physics_reg
+            
+            # Backward passes
+            losses['fx'].backward(retain_graph=True)
+            optimizers['fx'].step()
+            
+            losses['fy'].backward(retain_graph=True)
+            optimizers['fy'].step()
+            
+            losses['fz'].backward(retain_graph=True)
+            optimizers['fz'].step()
+            
+            optimizers['shared'].step()
+            
+            # Track metrics
+            train_loss += total_loss.item()
+            train_comps += torch.stack([losses['fx'], losses['fy'], losses['fz']]).detach()
+        
+        # Update schedulers
+        for sched in schedulers.values():
+            sched.step()
         
         # Validation phase
         model.eval()
@@ -171,16 +208,12 @@ def train_model(model, train_loader, val_loader, epochs=500):
         train_comps /= len(train_loader)
         val_comps /= len(val_loader)
         
-        # Track learning rate
-        current_lr = optimizer.param_groups[0]['lr']
-        history['lr'].append(current_lr)
-        
-        # Manual LR change detection
-        old_lr = current_lr
-        scheduler.step(avg_val)
-        new_lr = optimizer.param_groups[0]['lr']
-        if new_lr != old_lr:
-            print(f"\nLearning rate reduced from {old_lr:.2e} to {new_lr:.2e}")
+        # Track learning rates
+        current_lrs = {
+            'fx': optimizers['fx'].param_groups[0]['lr'],
+            'fy': optimizers['fy'].param_groups[0]['lr'],
+            'fz': optimizers['fz'].param_groups[0]['lr']
+        }
         
         # Save best model
         if avg_val < best_val_loss:
@@ -191,12 +224,16 @@ def train_model(model, train_loader, val_loader, epochs=500):
         history['train'].append(avg_train)
         history['val'].append(avg_val)
         history['components'].append(val_comps.numpy())
+        history['lr'].append(current_lrs)
         
         # Print progress
         if (epoch + 1) % 10 == 0:
-            print(f'Epoch {epoch+1}/{epochs} | LR: {current_lr:.2e}')
+            print(f'\nEpoch {epoch+1}/{epochs}:')
             print(f'Train Loss: {avg_train:.6f} | Val Loss: {avg_val:.6f}')
-            print(f'Component MAEs: Fx={val_comps[0]:.4f}, Fy={val_comps[1]:.4f}, Fz={val_comps[2]:.4f}\n')
+            print('Component MAEs:')
+            print(f'  Fx: {val_comps[0]:.6f} (LR: {current_lrs["fx"]:.2e})')
+            print(f'  Fy: {val_comps[1]:.6f} (LR: {current_lrs["fy"]:.2e})')
+            print(f'  Fz: {val_comps[2]:.6f} (LR: {current_lrs["fz"]:.2e})')
     
     return history
 
@@ -311,5 +348,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
