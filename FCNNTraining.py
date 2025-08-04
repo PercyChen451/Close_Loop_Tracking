@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 # Load data from file
-file = 'percy1_7-21.csv'
+file = 'percy81.csv'
 data = pd.read_csv(file)
 
 # Extract data columns (same as before)
@@ -37,7 +37,7 @@ bx2 = bx2 - bx2[0]
 by2 = by2 - by2[0]
 bz2 = bz2 - bz2[0]
 
-shift_i = 6
+shift_i = 2
 print("Shift", shift_i)
 fx = fx[:-shift_i]
 fy = fy[:-shift_i]
@@ -84,7 +84,7 @@ Y_std = np.std(Y_aligned, axis=0)
 Y_norm = (Y_aligned - Y_mean) / Y_std
 
 # New: Split data into continuous segments for validation
-def continuous_train_test_split(X, Y, test_size=0.2, val_segments=3, val_segment_size=0.05):
+def continuous_train_test_split(X, Y, test_size=0.2, val_segments=300, val_segment_size=0.0005):
     """
     Split data into training, validation, and test sets with continuous segments
     
@@ -136,7 +136,7 @@ def continuous_train_test_split(X, Y, test_size=0.2, val_segments=3, val_segment
 
 # Split data using continuous segments
 X_train, X_val, X_test, Y_train, Y_val, Y_test = continuous_train_test_split(
-    X_norm, Y_norm, test_size=0.2, val_segments=3, val_segment_size=0.05
+    X_norm, Y_norm, test_size=0.2, val_segments=300, val_segment_size=0.0005
 )
 
 # Convert to PyTorch tensors
@@ -163,13 +163,13 @@ input_size = (n_lags + 1) * n_features
 class NeuralNetwork(nn.Module):
     def __init__(self, input_size):
         super(NeuralNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_size, 64)
+        self.fc1 = nn.Linear(input_size, 128)
         self.relu1 = nn.ReLU()
-        self.fc2 = nn.Linear(64, 64)
+        self.fc2 = nn.Linear(128, 128)
         self.relu2 = nn.ReLU()
-        self.fc3 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(128, 128)
         self.relu3 = nn.ReLU()
-        self.fc4 = nn.Linear(64, 3)
+        self.fc4 = nn.Linear(128, 3)
         
     def forward(self, x):
         x = self.fc1(x)
@@ -186,7 +186,7 @@ model = NeuralNetwork(input_size)
 # Training settings (same as before)
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
-epochs = 2000
+epochs = 300
 
 # Training loop (same as before)
 train_losses = []
@@ -276,4 +276,4 @@ print(rmse)
 
 # Save model
 traced_model = torch.jit.trace(model, torch.randn(1, input_size))
-traced_model.save('force_calibration_model_optimized.pt'
+traced_model.save('force_calibration_model_optimized.pt')
