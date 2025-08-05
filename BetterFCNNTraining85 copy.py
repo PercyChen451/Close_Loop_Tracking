@@ -15,43 +15,55 @@ def prepare_data(filepath, n_lags=5, test_size=0.15, val_size=0.15, shift_i=2):
     # Load and verify data
     data = pd.read_csv(filepath)
     print(f"Original data shape: {data.shape}")
+    
     # Apply time shift with validation
     print(f"Applying time shift of {shift_i} samples")
     features = data[['Bx1', 'By1', 'Bz1', 'Bx2', 'By2', 'Bz2']].values[shift_i:]
     targets = data[['Fx', 'Fy', 'Fz']].values[:-shift_i]
+    
     # Verify alignment
     assert len(features) == len(targets), \
         f"Alignment failed! Features: {len(features)}, Targets: {len(targets)}"
+    
     # Feature engineering
     def add_features(feats):
         B_mag = np.sqrt(feats[:,0]**2 + feats[:,1]**2 + feats[:,2]**2)
         B2_mag = np.sqrt(feats[:,3]**2 + feats[:,4]**2 + feats[:,5]**2)
         return np.column_stack((feats, B_mag, B2_mag))
+    
     features = add_features(features)
     print(f"Features shape after engineering: {features.shape}")
+    
     # Create sequences with size validation
     def create_sequences(feats, targs, n_lags):
         X, Y = [], []
         for i in range(n_lags, len(feats)):
+            # Flatten the sequence of features
             X.append(feats[i-n_lags:i+1].flatten())
             Y.append(targs[i])
         return np.array(X), np.array(Y)
+    
     X, Y = create_sequences(features, targets, n_lags)
     print(f"Final sequence shapes - X: {X.shape}, Y: {Y.shape}")
+    
     # Split with size validation
     test_split = int(len(X) * (1 - test_size))
     val_split = int(test_split * (1 - val_size))
+    
     X_train, X_val, X_test = X[:val_split], X[val_split:test_split], X[test_split:]
     Y_train, Y_val, Y_test = Y[:val_split], Y[val_split:test_split], Y[test_split:]
+    
     print(f"Train shapes: X{X_train.shape}, Y{Y_train.shape}")
     print(f"Val shapes: X{X_val.shape}, Y{Y_val.shape}")
     print(f"Test shapes: X{X_test.shape}, Y{Y_test.shape}")
+    
     # Calculate robust scaling parameters (median and IQR)
     def calculate_robust_params(data):
         median = np.median(data, axis=0)
         iqr = np.percentile(data, 75, axis=0) - np.percentile(data, 25, axis=0)
         return median, iqr
     
+    # Calculate normalization parameters on the training set
     X_median, X_iqr = calculate_robust_params(X_train)
     Y_median, Y_iqr = calculate_robust_params(Y_train)
     
@@ -68,11 +80,12 @@ def prepare_data(filepath, n_lags=5, test_size=0.15, val_size=0.15, shift_i=2):
     Y_test_norm = normalize(Y_test, Y_median, Y_iqr)
     
     # Prepare normalization parameters dictionary
+    # Note: We don't need to tile here because create_sequences already flattened the data
     norm_params = {
-        'X_median': np.tile(X_median,(n_lags + 1)) ,
-        'X_iqr': np.tile(X_iqr,(n_lags + 1)) ,
-        'Y_median': Y_median,
-        'Y_iqr': Y_iqr,
+        'X_median': X_median,  # Shape should be (num_features * (n_lags + 1))
+        'X_iqr': X_iqr,        # Same shape as X_median
+        'Y_median': Y_median,  # Shape (3,) for Fx,Fy,Fz
+        'Y_iqr': Y_iqr,        # Shape (3,)
         'n_lags': n_lags,
         'shift_i': shift_i,
         'feature_cols': ['Bx1', 'By1', 'Bz1', 'Bx2', 'By2', 'Bz2', 'B_mag', 'B2_mag'],
@@ -92,8 +105,6 @@ def prepare_data(filepath, n_lags=5, test_size=0.15, val_size=0.15, shift_i=2):
             X_val_t, Y_val_t,
             X_test_t, Y_test_t,
             norm_params)
-
-
 
 # 2. Enhanced Model Architecture with Separate Heads
 class ForceCalibrationModel(nn.Module):
@@ -350,5 +361,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
