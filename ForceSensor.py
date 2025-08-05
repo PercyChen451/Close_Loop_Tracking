@@ -1,4 +1,11 @@
-
+    main()
+  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 151, in main
+    force = sen.receive_data()
+            ^^^^^^^^^^^^^^^^^^
+  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 67, in receive_data
+    line = self.comm.readline().decode('utf-8').strip()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xf4 in position 12: invalid continuation byte
 # Import relevant libraries
 import serial
 import matplotlib.pyplot as plt
