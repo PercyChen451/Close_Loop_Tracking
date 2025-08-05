@@ -157,3 +157,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 139, in calibrate_sensor
+    X_norm = (X_cal - self.X_median) / (self.X_iqr + 1e-8)
+              ~~~~~~^~~~~~~~~~~~~~~
+ValueError: operands could not be broadcast together with shapes (72,32) (128,) 
