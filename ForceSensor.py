@@ -98,45 +98,59 @@ class SensorComm:
         return Y_norm * self.Y_iqr + self.Y_median
 
     def calibrate_sensor(self, duration=3.0):
-        print("Calibrating...")
-        samples = []
-        start_time = time.time()
-        
-        while time.time() - start_time < duration:
-            line = self.read_valid_line()
-            if line:
-                try:
-                    values = list(map(float, line.split(',')))
-                    if len(values) == 6:
-                        samples.append(values)
-                except ValueError:
-                    continue
-        
-        if len(samples) >= self.HISTORY_BUFFER_SIZE:
-            # Process calibration samples
-            features = []
-            for i in range(len(samples) - self.HISTORY_BUFFER_SIZE + 1):
-                time_series = []
-                for j in range(self.HISTORY_BUFFER_SIZE):
-                    bx, by, bz, bx2, by2, bz2 = samples[i+j]
-                    b_mag = np.sqrt(bx**2 + by**2 + bz**2)
-                    b2_mag = np.sqrt(bx2**2 + by2**2 + bz2**2)
-                    time_series.extend([bx, by, bz, bx2, by2, bz2, b_mag, b2_mag])
-                features.append(time_series)
-            
-            X_cal = np.array(features, dtype=np.float32)
-            X_norm = (X_cal - self.X_median) / (self.X_iqr + 1e-8)
-            
-            with torch.no_grad():
-                forces = self.model(torch.from_numpy(X_norm)).numpy()
-                self.baseForce = np.mean(forces, axis=0)
-            
-            print(f"Calibration complete. Base force: {self.baseForce}")
-        else:
-            print("Insufficient calibration data")
-            self.baseForce = np.zeros(3)
-        
+    """Proper calibration with correct feature dimensions"""
+    print("Starting calibration...")
+    samples = []
+    start_time = time.time()
+    
+    # 1. Collect raw samples
+    while time.time() - start_time < duration:
+        line = self.read_valid_line()
+        if line:
+            try:
+                bx, by, bz, bx2, by2, bz2 = map(float, line.split(','))
+                # Calculate derived features (must match training)
+                b_mag = np.sqrt(bx**2 + by**2 + bz**2)
+                b2_mag = np.sqrt(bx2**2 + by2**2 + bz2**2)
+                samples.append([bx, by, bz, bx2, by2, bz2, b_mag, b2_mag])
+            except ValueError:
+                continue
+    
+    # 2. Verify we have enough samples
+    if len(samples) < self.HISTORY_BUFFER_SIZE:
+        print(f"Need at least {self.HISTORY_BUFFER_SIZE} samples, got {len(samples)}")
+        self.baseForce = np.zeros(3)
         return self.baseForce
+    
+    # 3. Build time-lagged features correctly
+    features = []
+    for i in range(len(samples) - self.HISTORY_BUFFER_SIZE + 1):
+        time_series = []
+        for j in range(self.HISTORY_BUFFER_SIZE):
+            time_series.extend(samples[i+j])  # 8 features per timestep
+        features.append(time_series)
+    
+    # 4. Create properly shaped input
+    X_cal = np.array(features, dtype=np.float32)
+    print(f"Calibration data shape: {X_cal.shape}")  # Should be (N, (n_lags+1)*8)
+    
+    # 5. Verify dimension match
+    if X_cal.shape[1] != len(self.X_median):
+        raise ValueError(
+            f"Feature dimension mismatch! "
+            f"Calibration data has {X_cal.shape[1]} features, "
+            f"model expects {len(self.X_median)}. "
+            f"Check n_lags (currently {self.n_lags})"
+        )
+    
+    # 6. Normalize and predict
+    X_norm = (X_cal - self.X_median) / (self.X_iqr + 1e-8)
+    with torch.no_grad():
+        forces = self.model(torch.from_numpy(X_norm)).numpy()
+        self.baseForce = np.mean(forces, axis=0)
+    
+    print(f"Calibration complete. Base force: {self.baseForce}")
+    return self.baseForce
 
 def main():
     # Initialize serial connection
@@ -157,8 +171,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 139, in calibrate_sensor
-    X_norm = (X_cal - self.X_median) / (self.X_iqr + 1e-8)
-              ~~~~~~^~~~~~~~~~~~~~~
-ValueError: operands could not be broadcast together with shapes (72,32) (128,) 
