@@ -1,12 +1,4 @@
-    main()
-  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 151, in main
-    force = sen.receive_data()
-            ^^^^^^^^^^^^^^^^^^
-  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 67, in receive_data
-    line = self.comm.readline().decode('utf-8').strip()
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-UnicodeDecodeError: 'utf-8' codec can't decode byte 0xf4 in position 12: invalid continuation byte
-# Import relevant libraries
+
 import serial
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -31,7 +23,6 @@ class SensorConnect(serial.Serial):
 
 
 class SensorComm:
-
     def __init__(self, chain):
         self.comm = chain
     
@@ -47,9 +38,9 @@ class SensorComm:
         self.Y_median = norm_params['Y_median'].astype(np.float32)
         self.Y_iqr = norm_params['Y_iqr'].astype(np.float32)
         self.n_lags = norm_params['n_lags']
-        self.HISTORY_BUFFER_SIZE = self.n_lags + 1  # This needs to be defined before any methods try to use it
+        self.HISTORY_BUFFER_SIZE = self.n_lags + 1  # This must be defined before init_buffers()
         
-        # Initialize buffers
+        # Initialize all buffers directly in __init__
         self.SMOOTHING_WINDOW = 5
         self.bx_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
         self.by_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
@@ -57,6 +48,14 @@ class SensorComm:
         self.bx2_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
         self.by2_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
         self.bz2_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
+        
+        # Also initialize history buffers if needed
+        self.bx_history = deque(maxlen=self.HISTORY_BUFFER_SIZE)
+        self.by_history = deque(maxlen=self.HISTORY_BUFFER_SIZE)
+        self.bz_history = deque(maxlen=self.HISTORY_BUFFER_SIZE)
+        self.bx2_history = deque(maxlen=self.HISTORY_BUFFER_SIZE)
+        self.by2_history = deque(maxlen=self.HISTORY_BUFFER_SIZE)
+        self.bz2_history = deque(maxlen=self.HISTORY_BUFFER_SIZE)
 
         self.model = torch.jit.load('force_calibration_model_optimized.pt')
         self.model.eval()
