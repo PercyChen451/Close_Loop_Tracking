@@ -112,16 +112,16 @@ class ForceCalibrationModel(nn.Module):
         
         # Component-specific heads
         self.fx_head = nn.Sequential(
-            nn.Linear(512, 128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 1))
-        
-        self.fy_head = nn.Sequential(
-            nn.Linear(512, 512),
-            nn.LeakyReLU(0.1),
             nn.Linear(512, 256),
             nn.LeakyReLU(0.1),
             nn.Linear(256, 1))
+        
+        self.fy_head = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.LeakyReLU(0.1),
+            nn.Linear(128, 64),
+            nn.LeakyReLU(0.1),
+            nn.Linear(64, 1))
         
         self.fz_head = nn.Sequential(
             nn.Linear(512, 256),
@@ -159,15 +159,15 @@ class ComponentWeightedLoss(nn.Module):
 # 4. Enhanced Training Process
 def train_model(model, train_loader, val_loader, epochs=500):
     criterion = ComponentWeightedLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.01, weight_decay=1e-4)
     
     # Modified scheduler without verbose
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
         mode='min',
-        factor=0.8,
+        factor=0.7,
         patience=50,
-        min_lr=3e-6
+        min_lr=1e-6
     )
     
     best_val_loss = float('inf')
@@ -326,7 +326,7 @@ def main():
     
     # Train
     print("Starting training...")
-    history = train_model(model, train_loader, val_loader, epochs=500)
+    history = train_model(model, train_loader, val_loader, epochs=1500)
     
     # Load best model
     model.load_state_dict(torch.load('best_model.pth'))
