@@ -14,11 +14,12 @@ class SensorComm:
         
         # Load normalization parameters
         norm_params = np.load('normalization_params.npy', allow_pickle=True).item()
-        self.X_median = norm_params['X_median'].astype(np.float32)
-        self.X_iqr = norm_params['X_iqr'].astype(np.float32)
-        self.Y_median = norm_params['Y_median'].astype(np.float32)
-        self.Y_iqr = norm_params['Y_iqr'].astype(np.float32)
+        self.X_median = norm_params['X_median'].astype(np.float32)  # Shape: (num_features*(n_lags+1),)
+        self.X_iqr = norm_params['X_iqr'].astype(np.float32)        # Same shape as X_median
+        self.Y_median = norm_params['Y_median'].astype(np.float32)  # Shape: (3,)
+        self.Y_iqr = norm_params['Y_iqr'].astype(np.float32)        # Shape: (3,)
         self.n_lags = norm_params['n_lags']
+        self.num_features = 8  # 6 magnetic + 2 magnitude
         
         # Initialize buffers
         self.HISTORY_BUFFER_SIZE = self.n_lags + 1
@@ -72,21 +73,12 @@ class SensorComm:
         
         return self.current_data
 
-    def read_valid_line(self):
-        """Read until getting a valid data line"""
-        while self.comm.in_waiting > 0:
-            line = self.comm.readline().decode('utf-8', errors='ignore').strip()
-            if line and not any(x in line for x in ['Initializing', 'sensor', 'ready']):
-                if len(line.split(',')) == 6:
-                    return line
-        return None
-
     def predict_force(self, bx, by, bz, bx2, by2, bz2):
         # Calculate derived features
         b_mag = np.sqrt(bx**2 + by**2 + bz**2)
         b2_mag = np.sqrt(bx2**2 + by2**2 + bz2**2)
         
-        # Create current feature vector
+        # Create current feature vector (8 features)
         current_features = np.array([bx, by, bz, bx2, by2, bz2, b_mag, b2_mag], dtype=np.float32)
         
         # Add to history
@@ -97,23 +89,22 @@ class SensorComm:
         if len(self.history) < self.HISTORY_BUFFER_SIZE:
             return np.zeros(3)
         
-        # Create input vector
-        features = np.concatenate(self.history).reshape(1, -1)
-        X_norm = (features - self.X_median) / (self.X_iqr + 1e-8)
+        # Create input vector by flattening the history
+        X_cal = np.concatenate(self.history).reshape(1, -1)  # Shape: (1, num_features*(n_lags+1))
         
+        # Verify shapes match
+        if X_cal.shape[1] != len(self.X_median):
+            raise ValueError(f"Feature dimension mismatch! Input: {X_cal.shape[1]}, Expected: {len(self.X_median)}")
+        
+        # Normalize input
+        X_norm = (X_cal - self.X_median) / (self.X_iqr + 1e-8)
+        
+        # Predict
         with torch.no_grad():
             Y_norm = self.model(torch.from_numpy(X_norm)).numpy()[0]
         
+        # Denormalize output
         return Y_norm * self.Y_iqr + self.Y_median
-
-    def read_valid_line(self):
-        """Read until getting a valid data line"""
-        while self.comm.in_waiting > 0:
-            line = self.comm.readline().decode('utf-8', errors='ignore').strip()
-            if line and not any(x in line for x in ['Initializing', 'sensor', 'ready']):
-                if len(line.split(',')) == 6:
-                    return line
-        return None
 
     def calibrate_sensor(self, duration=3.0):
         print("Calibrating...")
@@ -140,9 +131,15 @@ class SensorComm:
                     b_mag = np.sqrt(bx**2 + by**2 + bz**2)
                     b2_mag = np.sqrt(bx2**2 + by2**2 + bz2**2)
                     time_series.extend([bx, by, bz, bx2, by2, bz2, b_mag, b2_mag])
-                features.append(time_series)
+                features.append(np.array(time_series).flatten())
             
             X_cal = np.array(features, dtype=np.float32)
+            
+            # Verify shape
+            if X_cal.shape[1] != len(self.X_median):
+                raise ValueError(f"Calibration feature dimension mismatch! Input: {X_cal.shape[1]}, Expected: {len(self.X_median)}")
+            
+            # Normalize and predict
             X_norm = (X_cal - self.X_median) / (self.X_iqr + 1e-8)
             
             with torch.no_grad():
@@ -155,6 +152,15 @@ class SensorComm:
             self.baseForce = np.zeros(3)
         
         return self.baseForce
+
+    def read_valid_line(self):
+        """Read until getting a valid data line"""
+        while self.comm.in_waiting > 0:
+            line = self.comm.readline().decode('utf-8', errors='ignore').strip()
+            if line and not any(x in line for x in ['Initializing', 'sensor', 'ready']):
+                if len(line.split(',')) == 6:
+                    return line
+        return None
 
 def main():
     # Initialize serial connection
