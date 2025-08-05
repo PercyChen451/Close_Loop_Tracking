@@ -1,3 +1,14 @@
+  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 275, in <module>
+    main()
+  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 259, in main
+    sensor = SensorComm(sen_con)
+             ^^^^^^^^^^^^^^^^^^^
+  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 41, in __init__
+    self.init_buffers()
+  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 80, in init_buffers
+    self.bx_history = deque(maxlen=self.HISTORY_BUFFER_SIZE)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'SensorComm' object has no attribute 'HISTORY_BUFFER_SIZE'
 # Import relevant libraries
 import serial
 import matplotlib.pyplot as plt
