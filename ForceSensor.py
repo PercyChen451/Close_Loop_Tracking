@@ -1,14 +1,4 @@
-  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 275, in <module>
-    main()
-  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 259, in main
-    sensor = SensorComm(sen_con)
-             ^^^^^^^^^^^^^^^^^^^
-  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 41, in __init__
-    self.init_buffers()
-  File "/home/cardio/Documents/camera_tracking/cali_tracking/collocated_CLIK/0723/ForceSensor.py", line 80, in init_buffers
-    self.bx_history = deque(maxlen=self.HISTORY_BUFFER_SIZE)
-                                   ^^^^^^^^^^^^^^^^^^^^^^^^
-AttributeError: 'SensorComm' object has no attribute 'HISTORY_BUFFER_SIZE'
+
 # Import relevant libraries
 import serial
 import matplotlib.pyplot as plt
@@ -50,11 +40,9 @@ class SensorComm:
         self.Y_median = norm_params['Y_median'].astype(np.float32)
         self.Y_iqr = norm_params['Y_iqr'].astype(np.float32)
         self.n_lags = norm_params['n_lags']
-        self.HISTORY_BUFFER_SIZE = self.n_lags + 1
-        self.model = torch.jit.load('force_calibration_model_optimized.pt')
-        self.model.eval()
-        self.model.float()  # Ensure model uses float32
-
+        self.HISTORY_BUFFER_SIZE = self.n_lags + 1  # This needs to be defined before any methods try to use it
+        
+        # Initialize buffers
         self.SMOOTHING_WINDOW = 5
         self.bx_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
         self.by_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
@@ -63,9 +51,9 @@ class SensorComm:
         self.by2_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
         self.bz2_buffer = deque(maxlen=self.SMOOTHING_WINDOW)
 
-
         self.model = torch.jit.load('force_calibration_model_optimized.pt')
         self.model.eval()
+        self.model.float()  # Ensure model uses float32
 
         self.baseForce = np.array([2.390, -1.545, 15.920])
 
